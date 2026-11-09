@@ -5,6 +5,26 @@ The host program is written in Rust; the mining kernels are CUDA C++.
 
 Every share is checked with the official Pearl verifier (`zk-pow`) before it is submitted.
 
+## Quickstart (Kryptex pool)
+
+```bash
+git clone --recursive https://github.com/pushsoftnow/blackwell_pearl_miner.git
+cd blackwell_pearl_miner
+cargo build --release
+./target/release/bpm --pool prl-eu.kryptex.network:7048 --wallet YOUR_KRYPTEX_ID --worker rig1
+```
+
+Replace `YOUR_KRYPTEX_ID` with your Kryptex account ID (it starts with `krx`) and `rig1` with
+any worker name. Add `--background` if the GPU is shared with other programs (games, LLM
+servers): mining then pauses whenever another process computes on the GPU.
+
+No Kryptex account yet? Sign up here: **[kryptex.com](https://www.kryptex.com/?ref=973ba14d)**
+
+> **Disclaimer:** This is a referral link. Using it is optional and has no impact on your
+> mining: hashrate, shares and the miner itself are exactly the same with or without it.
+> blackwell_pearl_miner is completely free and open source — there is **no dev fee**; 100 % of
+> your hashrate goes to the pool and wallet you configure.
+
 ## Requirements
 
 * Linux x86_64
