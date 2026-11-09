@@ -21,7 +21,8 @@ servers): mining then pauses whenever another process computes on the GPU.
 No Kryptex account yet? Sign up here: **[kryptex.com](https://www.kryptex.com/?ref=973ba14d)**
 
 > **Disclaimer:** This is a referral link. Using it is optional and has no impact on your
-> mining: hashrate, shares and the miner itself are exactly the same with or without it.
+> mining: hashrate, shares and the miner itself are exactly the same with or without it, and
+> your payouts are not reduced — Kryptex pays the referral bonus out of its own share.
 > blackwell_pearl_miner is completely free and open source — there is **no dev fee**; 100 % of
 > your hashrate goes to the pool and wallet you configure.
 
