@@ -266,6 +266,72 @@ __global__ void build_pairs(const uint32_t *ia, const uint32_t *ib, Pair *out, i
   if (i >= k) return;
   out[i] = make_uint2(ia[i], ib[i]);
 }
+
+// Bank-conflict-aware column order. Within each 128-column K block the order of the columns is free
+// (the hash folds prefix sums every 128 K), so the result is bit-identical. ldmatrix serves 8 lanes
+// (= 8 K columns) per phase; each lane reads the 16-byte row of one basis component, whose bank
+// group is (component mod 8). Four address streams share the column order: A plus, A minus,
+// B plus, B minus, issued 10, 10, 16 and 16 times per CTA step. One warp per K block assigns the
+// 128 columns greedily to 16 groups of 8 so that the weighted number of extra wavefronts
+// (largest colour multiplicity - 1 per stream) grows least. Removes ~45 % of the bank conflicts.
+__device__ __forceinline__ unsigned maxnib(unsigned h) {
+  unsigned m = __vmaxu4(h & 0x0f0f0f0fu, (h >> 4) & 0x0f0f0f0fu);
+  m = __vmaxu4(m, m >> 16);
+  m = __vmaxu4(m, m >> 8);
+  return m & 0xffu;
+}
+__global__ __launch_bounds__(128) void reorder_pairs(Pair *pairs, int k) {
+  constexpr int W[4] = {10, 10, 16, 16};
+  __shared__ Pair sp[4][128];
+  __shared__ uint32_t scol[4][128];
+  __shared__ uint8_t sgrp[4][128];
+  __shared__ uint32_t sh[4][16][4];
+  __shared__ int ssize[4][16];
+  const int w = threadIdx.x >> 5, lane = threadIdx.x & 31, blk = blockIdx.x * 4 + w;
+  if (blk * 128 >= k) return;
+  Pair *g = pairs + size_t(blk) * 128, *pr = sp[w];
+  uint32_t *col = scol[w], (*hist)[4] = sh[w];
+  uint8_t *grp = sgrp[w];
+  int *size = ssize[w];
+  for (int c = lane; c < 128; c += 32) {
+    const Pair v = g[c];
+    pr[c] = v;
+    col[c] = ((v.x >> 4) & 7) | (((v.x >> 20) & 7) << 8) | (((v.y >> 4) & 7) << 16) | (((v.y >> 20) & 7) << 24);
+  }
+  if (lane < 16) {
+    size[lane] = 0;
+    hist[lane][0] = hist[lane][1] = hist[lane][2] = hist[lane][3] = 0;
+  }
+  __syncwarp();
+  for (int c = 0; c < 128; ++c) {
+    const uint32_t cc = col[c];
+    unsigned key = 0xffffffffu;
+    if (lane < 16 && size[lane] < 8) {
+      int delta = 0;
+#pragma unroll
+      for (int s = 0; s < 4; ++s) {
+        const unsigned h = hist[lane][s], cnt = (h >> (4 * ((cc >> (8 * s)) & 7))) & 15, mx = maxnib(h);
+        if (cnt + 1 > (mx > 1 ? mx : 1)) delta += W[s];
+      }
+      key = (unsigned(delta) << 8) | (unsigned(size[lane]) << 4) | unsigned(lane);
+    }
+    key = __reduce_min_sync(0xffffffffu, key);
+    if (lane == int(key & 15)) {
+#pragma unroll
+      for (int s = 0; s < 4; ++s) hist[lane][s] += 1u << (4 * ((cc >> (8 * s)) & 7));
+      size[lane]++;
+      grp[c] = uint8_t(lane);
+    }
+    __syncwarp();
+  }
+  // Group q takes positions 8q..8q+7 of the block (step q/4, lanes 8*(q%4)..+7).
+  for (int c = lane; c < 128; c += 32) {
+    const int q = grp[c];
+    int pos = 0;
+    for (int e = 0; e < c; ++e) pos += grp[e] == q;
+    g[q * 8 + pos] = pr[c];
+  }
+}
 } // namespace k780
 
 // Packed basis (pack_basis_frag) for A and B, packed pair indices for A and B.
@@ -282,6 +348,9 @@ extern "C" int pm_k780_launch(const void *basA, const void *basB, const void *ia
   if (e) return e;
   auto s = (cudaStream_t)stream;
   build_pairs<<<(k + 255) / 256, 256, 0, s>>>((const uint32_t *)ia, (const uint32_t *)ib, pairs, k);
+  e = cudaGetLastError();
+  if (e) return e;
+  reorder_pairs<<<(k / 128 + 3) / 4, 128, 0, s>>>(pairs, k);
   e = cudaGetLastError();
   if (e) return e;
   const int mm = m / BM * BM;

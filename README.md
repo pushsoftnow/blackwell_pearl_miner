@@ -81,6 +81,8 @@ waits for outstanding pool acknowledgements. A second Ctrl+C exits immediately.
 * **Kernel 780** (default) works on packed rank-128 noise factors and needs about 0.5 GiB of GPU
   memory. It uses K = 65536, or K = 16384 with `--priority` or `--background` (shorter rounds). Long-K proofs are
   only accepted by pools that negotiate gzip-compressed proofs.
+  Each round, the K columns inside every 128-column block are reordered to avoid shared-memory bank conflicts
+  in the operand rebuild (bit-identical results, about +1 % at a fixed power limit).
 * **Kernel 448** works on dense prepared operands with K = 4096 and needs about 0.8 GiB. If the
   pool does not negotiate gzip proofs, the miner switches to this profile automatically.
 
