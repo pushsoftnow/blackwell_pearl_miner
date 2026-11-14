@@ -16,7 +16,8 @@ cargo build --release
 
 Replace `YOUR_KRYPTEX_ID` with your Kryptex account ID (it starts with `krx`) and `rig1` with
 any worker name. Add `--background` if the GPU is shared with other programs (games, LLM
-servers): mining then pauses whenever another process computes on the GPU.
+servers): mining then pauses whenever another process computes on the GPU. Add `--tune` once to time
+the kernel variants on your GPU (about 40 seconds, [Kernel tuning](#kernel-tuning)).
 
 No Kryptex account yet? Sign up here: **[kryptex.com](https://www.kryptex.com/?ref=973ba14d)**
 
@@ -57,7 +58,8 @@ binary, so `target/release/bpm` is the only file needed at run time.
 ./target/release/bpm --pool HOST:PORT --wallet ADDRESS_OR_ACCOUNT --worker NAME
 ```
 
-`--self-test` mines a fixed job offline and verifies the resulting proofs for every kernel profile.
+`--self-test` mines a fixed job offline, verifies the resulting proofs for every kernel profile
+and checks that every kernel 780 variant reports exactly the default variant's hits.
 
 | Option | Meaning |
 |---|---|
@@ -72,6 +74,9 @@ binary, so `target/release/bpm` is the only file needed at run time.
 | `--json` | Print events as JSON lines |
 | `--priority PATH` | Yield the GPU to a program, see below |
 | `--background` | Yield the GPU to every other program that computes on it |
+| `--tune`, `--no-tune` | Time the kernel variants and keep the fastest / ignore a stored tuning result, see below |
+| `--kernel-variant NAME` | Use this kernel variant without tuning |
+| `--tune-only` | Run the kernel tuning (or show its stored result) and exit |
 
 `--help` lists all options. Stop the miner with Ctrl+C; it finishes the rounds in flight and
 waits for outstanding pool acknowledgements. A second Ctrl+C exits immediately.
@@ -85,6 +90,49 @@ waits for outstanding pool acknowledgements. A second Ctrl+C exits immediately.
   in the operand rebuild (bit-identical results, about +1 % at a fixed power limit).
 * **Kernel 448** works on dense prepared operands with K = 4096 and needs about 0.8 GiB. If the
   pool does not negotiate gzip proofs, the miner switches to this profile automatically.
+
+### Kernel tuning
+
+Kernel 780 is compiled in several variants, listed in [`kernels/variants.txt`](kernels/variants.txt):
+different placements of the operand loads and stores in the inner loop and different ptxas
+optimisation levels. Which one is fastest depends on the GPU, the CUDA toolkit that built the
+miner and the power limit. By default the miner uses the first variant (`u6`, measured best on
+an RTX PRO 4500 Blackwell). Started with `--tune`, it checks every variant against the default
+(identical hits on a fixed job), times them on your GPU for about 40 seconds, interleaved in
+random order, and mines with the fastest. Another variant replaces the default only if it is
+faster by more than twice its measuring error and by at least 0.05 %.
+
+The result is stored in `~/.cache/bpm/tune.json` per GPU model, driver, build, K and power limit
+and reused on later starts without `--tune` as long as these stay the same; otherwise the
+default is used again. `--tune` measures again, `--no-tune` ignores a stored result,
+`--kernel-variant NAME` picks a variant and `--tune-only` only runs the tuning (or shows the
+stored result) and exits. With `--priority` or `--background` the tuning is skipped while
+another process computes on the GPU. `--self-test` checks all variants as well.
+
+#### Tuning wizard (optional)
+
+[`tools/tune-wizard.py`](tools/tune-wizard.py) searches for new variants on your GPU (Python 3,
+standard library only):
+
+```bash
+python3 tools/tune-wizard.py
+```
+
+It asks for the GPU, the search size (quick about 4 minutes, normal about 8, thorough about 30),
+the measuring method (kernel time at your power limit, or SM cycles with Nsight Compute `ncu`),
+the power limit for the search, and whether other processes on the GPU may be paused (SIGSTOP,
+continued with SIGCONT at the end). It first measures the baselines (all listed variants and
+ptxas `-O0` to `-O3` plus nvcc's default), then compiles and measures new placements around the
+best ones, checks every candidate for identical results and finally confirms the five best in
+a 60-second run. A progress bar shows the state. Root is only needed to change the power limit,
+to pause other users' processes or for `ncu` without profiling permission; run it with `sudo`
+in that case (builds and the miner then run as your user).
+
+At the end the wizard writes a report to `tuning/results/`, offers to add a faster variant to
+your `kernels/variants.txt` and rebuild, and prints a prefilled GitHub issue link. **Please
+submit your result**, also when nothing faster was found: results for other GPUs, CUDA versions
+and power limits go into the variant list, so every user's miner can pick them in its own tuning.
+The report contains only GPU model, driver, CUDA version, power limit and the measured variants.
 
 ### Sharing the GPU (`--priority`)
 

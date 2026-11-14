@@ -57,6 +57,8 @@ extern "C" {
     fn cuEventRecord(e: CUevent, s: CUstream) -> CUresult;
     fn cuEventSynchronize(e: CUevent) -> CUresult;
     fn cuEventDestroy_v2(e: CUevent) -> CUresult;
+    fn cuEventElapsedTime(ms: *mut f32, start: CUevent, end: CUevent) -> CUresult;
+    fn cuDriverGetVersion(v: *mut c_int) -> CUresult;
 }
 
 pub fn check(rc: CUresult, what: &str) -> Result<()> {
@@ -267,6 +269,18 @@ impl Event {
         check(unsafe { cuEventCreate(&mut e, CU_EVENT_BLOCKING_SYNC | CU_EVENT_DISABLE_TIMING) }, "cuEventCreate")?;
         Ok(Event(e))
     }
+    /// Event with timing, for kernel timing (blocking sync as well).
+    pub fn timed() -> Result<Self> {
+        let mut e = std::ptr::null_mut();
+        check(unsafe { cuEventCreate(&mut e, CU_EVENT_BLOCKING_SYNC) }, "cuEventCreate")?;
+        Ok(Event(e))
+    }
+    /// Milliseconds from `start` to `self` (both recorded and completed, both timed).
+    pub fn since(&self, start: &Event) -> Result<f32> {
+        let mut ms = 0f32;
+        check(unsafe { cuEventElapsedTime(&mut ms, start.0, self.0) }, "cuEventElapsedTime")?;
+        Ok(ms)
+    }
     pub fn record(&self, s: &Stream) -> Result<()> {
         check(unsafe { cuEventRecord(self.0, s.0) }, "cuEventRecord")
     }
@@ -278,6 +292,13 @@ impl Drop for Event {
     fn drop(&mut self) {
         unsafe { cuEventDestroy_v2(self.0) };
     }
+}
+
+/// CUDA driver API version, e.g. 13020 for 13.2.
+pub fn driver_version() -> Result<i32> {
+    let mut v = 0;
+    check(unsafe { cuDriverGetVersion(&mut v) }, "cuDriverGetVersion")?;
+    Ok(v)
 }
 
 pub fn memory_info() -> Result<(usize, usize)> {

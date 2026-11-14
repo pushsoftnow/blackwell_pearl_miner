@@ -1,0 +1,80 @@
+{
+  "format": 1,
+  "gpu": "NVIDIA RTX PRO 4500 Blackwell",
+  "driver": "620.70.06",
+  "cuda": "13.4",
+  "power_limit_w": 150.0,
+  "k": 16384,
+  "bpm_commit": "2e368f1",
+  "method": "timing",
+  "candidates_measured": 159,
+  "date": "2026-11-13",
+  "best": {
+    "variant": "-O1 P5=26",
+    "gain_percent": 0.005,
+    "error_percent": 0.005,
+    "significant": false,
+    "same_as": "y5m1"
+  },
+  "top": [
+    {
+      "variant": "-O1 P5=26",
+      "gain_percent": 0.005
+    },
+    {
+      "variant": "-O1 P2=14 P5=25 P6=28",
+      "gain_percent": -0.006
+    },
+    {
+      "variant": "-O1 P1=12 P5=25",
+      "gain_percent": -0.025
+    }
+  ],
+  "baselines": [
+    {
+      "variant": "-O1",
+      "name": "u6",
+      "gain_percent": -0.046
+    },
+    {
+      "variant": "-O2",
+      "name": "u6-O2",
+      "gain_percent": -37.935
+    },
+    {
+      "variant": "-O3",
+      "name": "u6-O3",
+      "gain_percent": -37.935
+    },
+    {
+      "variant": "-O1 P5=26",
+      "name": "y5m1",
+      "gain_percent": 0.005
+    },
+    {
+      "variant": "-O1 PL=21",
+      "name": "w5q21",
+      "gain_percent": -0.026
+    },
+    {
+      "variant": "-O1 P0=8 PL=24",
+      "name": "u10",
+      "gain_percent": -0.211
+    },
+    {
+      "variant": "-O1 P0=8 PL=0 MID=0",
+      "name": "p1b51",
+      "gain_percent": -0.951
+    },
+    {
+      "variant": "-O0",
+      "name": "default-O0",
+      "gain_percent": -93.597
+    },
+    {
+      "variant": "-O3",
+      "name": "default-nvcc-default",
+      "gain_percent": -37.935
+    }
+  ]
+}

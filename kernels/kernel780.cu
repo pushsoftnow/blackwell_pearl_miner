@@ -7,8 +7,50 @@
 #include <utility>
 #include "gemm/pow_utils.hpp"
 
-namespace k780 {
-constexpr int P0 = 5, P1 = 10, P2 = 12, P3 = 14, P4 = 25, P5 = 27, P6 = 29, P7 = 31, PL = 20;
+// Placement knobs (MMA index 0..34 of a step at which an operation is issued) for the kernel
+// tuning (README, "Kernel tuning"). The defaults are the measured best on an RTX PRO 4500.
+// K780_MID 1: the steady-state loop carries no code for the final fold.
+#ifndef K780_P0
+#define K780_P0 5
+#endif
+#ifndef K780_P1
+#define K780_P1 10
+#endif
+#ifndef K780_P2
+#define K780_P2 12
+#endif
+#ifndef K780_P3
+#define K780_P3 14
+#endif
+#ifndef K780_P4
+#define K780_P4 25
+#endif
+#ifndef K780_P5
+#define K780_P5 27
+#endif
+#ifndef K780_P6
+#define K780_P6 29
+#endif
+#ifndef K780_P7
+#define K780_P7 31
+#endif
+#ifndef K780_PL
+#define K780_PL 20
+#endif
+#ifndef K780_MID
+#define K780_MID 1
+#endif
+// Every variant of the library gets its own namespace and launch symbol.
+#ifndef K780_NS
+#define K780_NS k780
+#endif
+#ifndef K780_LAUNCH
+#define K780_LAUNCH pm_k780_launch
+#endif
+
+namespace K780_NS {
+constexpr int P0 = K780_P0, P1 = K780_P1, P2 = K780_P2, P3 = K780_P3, P4 = K780_P4, P5 = K780_P5, P6 = K780_P6, P7 = K780_P7, PL = K780_PL;
+constexpr bool MIDX = K780_MID;
 constexpr int BM = 160, BN = 256, WM = 80, WN = 64, MI = WM / 16, NJ = WN / 8, NT = 256;
 constexpr int FA = BM / 16, FB = BN / 16, FR = FA + FB, RQ = (FR + 7) / 8;
 constexpr int BASA = FA * 2048, BASB = FB * 2048, STG = FR * 512, TRACE = NT * 16 * 4;
@@ -16,6 +58,8 @@ constexpr int OFF_BA = 0, OFF_BB = BASA, OFF_STG = BASA + BASB, OFF_TR = OFF_STG
 constexpr int SHARED = OFF_BAR + 16;
 static_assert(SHARED <= 101376 - 1024);
 static_assert(P0 < P1 && P2 >= 2 * MI && P4 >= 4 * MI && RQ == 4);
+// Order of the reads and writes of the two ldmatrix slots, and the MMA index range.
+static_assert(P1 <= P4 && P4 <= P6 && P2 <= P3 && P3 <= P5 && P5 <= P7 && P0 >= 0 && P7 < (NJ - 1) * MI && PL >= 0 && PL < (NJ - 1) * MI);
 
 // Pair offsets per K column: x = A (plus*16 | minus*16<<16), y = B.
 using Pair = uint2;
@@ -241,7 +285,7 @@ __device__ __forceinline__ void body(const Params &p) {
     // Four steps per loop iteration. mode 0: first group, 1: steady state, 2: last group.
     // MID: steady-state group; its last step is never the last step of the tile, so it carries no final-fold code.
     auto grp = [&]<bool FIRST, bool MID, int... k>(std::integer_sequence<int, k...>, const int s0, const int mode) {
-      (step.template operator()<(k & 1), ((k & 3) == 3 && !MID) ? 1 : 0, ((k & 3) == 0 && !(FIRST && k == 0)) ? 1 : 0>(
+      (step.template operator()<(k & 1), ((k & 3) == 3 && !(MID && MIDX)) ? 1 : 0, ((k & 3) == 0 && !(FIRST && k == 0)) ? 1 : 0>(
            s0 + k, (k & 1) ? b0 : b1, mode != 2 || s0 + k < S - 1, mode != 2 || s0 + k < S - 2, mode != 2 || s0 + k < S - 1, mode == 0 && k == 0),
        ...);
     };
@@ -343,13 +387,13 @@ __global__ __launch_bounds__(128) void reorder_pairs(Pair *pairs, int k) {
     g[q * 8 + pos] = pr[c];
   }
 }
-} // namespace k780
+} // namespace K780_NS
 
 // Packed basis (pack_basis_frag) for A and B, packed pair indices for A and B.
 // Covers the first M/160*160 rows; the nonce row is never sampled.
-extern "C" int pm_k780_launch(const void *basA, const void *basB, const void *ia, const void *ib, int m, int n, int k,
+extern "C" int K780_LAUNCH(const void *basA, const void *basB, const void *ia, const void *ib, int m, int n, int k,
                               const void *key, const void *target, void *count, void *ids, int cap, void *stream) {
-  using namespace k780;
+  using namespace K780_NS;
   if (m % 16 || n % BN || k % 128 || k < 256 || k > 65536) return cudaErrorInvalidValue;
   Pair *pairs;
   uint32_t *zero;

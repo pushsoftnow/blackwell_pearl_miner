@@ -3,7 +3,7 @@
 //!   advance nonce -> Merkle root of A -> commitment -> noise(A) -> pack/prepare A
 //!   -> zero hit count -> mining kernel -> copy nonce signal + root_A -> D2H.
 use crate::cuda::{DevBuf, Event, Graph, HostBuf, Stream};
-use crate::kernels::Kernels;
+use crate::kernels::{K780Fn, Kernels};
 use crate::protocol::{Kernel, MiningJob, Profile, M, N, RANK};
 use anyhow::{ensure, Result};
 use std::ffi::c_void;
@@ -179,7 +179,7 @@ impl Engine {
         unsafe {
             match &self.ops {
                 Operands::Lean { packed_a, packed_b, packed_ia, packed_ib, .. } => rc(
-                    (sp.k780)(packed_a.p(), packed_b.p(), packed_ia.p(), packed_ib.p(), M as i32, N as i32, k,
+                    (sp.k780())(packed_a.p(), packed_b.p(), packed_ia.p(), packed_ib.p(), M as i32, N as i32, k,
                         self.key_a.p(), self.target.p(), count, ids, self.capacity as i32, s),
                     "kernel 780",
                 )?,
@@ -222,6 +222,38 @@ impl Engine {
         let mut root_b = [0u8; 32];
         self.root_b.download(&mut root_b)?;
         Ok((heap, root_b))
+    }
+
+    /// Kernel tuning: one launch of kernel 780 variant `f` on the operands of the last round
+    /// (nothing advances, so repeated calls see the same input). Requires no round in flight.
+    /// Returns (kernel milliseconds, hit count, sorted hit ids).
+    pub fn time_k780(&self, f: K780Fn) -> Result<(f32, u32, Vec<u32>)> {
+        let Operands::Lean { packed_a, packed_b, packed_ia, packed_ib, .. } = &self.ops else {
+            anyhow::bail!("kernel timing needs kernel 780");
+        };
+        ensure!(self.slots.iter().all(|s| !s.pending), "kernel timing with rounds in flight");
+        let (s, k) = (self.s(), self.profile.k as i32);
+        let slot = &self.slots[0];
+        let (start, end) = (Event::timed()?, Event::timed()?);
+        self.stream.memset(slot.result.ptr, 0, 4)?;
+        start.record(&self.stream)?;
+        unsafe {
+            rc(
+                f(packed_a.p(), packed_b.p(), packed_ia.p(), packed_ib.p(), M as i32, N as i32, k, self.key_a.p(), self.target.p(),
+                    slot.result.p(), (slot.result.ptr + 4) as *mut c_void, self.capacity as i32, s),
+                "kernel 780 (timing)",
+            )?;
+        }
+        end.record(&self.stream)?;
+        self.stream.copy_d2h(slot.host.ptr, slot.result.ptr, (self.capacity + 1) * 4)?;
+        self.stream.sync()?;
+        let ms = end.since(&start)?;
+        let raw = slot.host.slice();
+        let count = u32::from_le_bytes(raw[..4].try_into().unwrap());
+        let n = (count as usize).min(self.capacity);
+        let mut ids: Vec<u32> = (0..n).map(|j| u32::from_le_bytes(raw[4 + 4 * j..8 + 4 * j].try_into().unwrap())).collect();
+        ids.sort_unstable();
+        Ok((ms, count, ids))
     }
 
     pub fn depth(&self) -> usize {

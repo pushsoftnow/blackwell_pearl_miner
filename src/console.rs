@@ -1,5 +1,5 @@
 //! Human-readable console events; the JSONL log stays independent and complete.
-use serde_json::Value;
+use serde_json::{json, Value};
 
 fn clean(v: &str, limit: usize) -> String {
     v.chars().map(|c| if c.is_control() { ' ' } else { c }).take(limit).collect()
@@ -18,6 +18,11 @@ pub fn number(v: &Value, digits: usize) -> String {
         Some(x) if x.is_finite() => format!("{:.digits$}", if x == 0.0 { 0.0 } else { x }),
         _ => "-".into(),
     }
+}
+
+fn signed(v: &Value) -> String {
+    let x = v.as_f64().unwrap_or(0.0);
+    format!("{}{:.2}", if x >= 0.0 { "+" } else { "" }, x)
 }
 
 pub fn duration(v: &Value) -> String {
@@ -88,6 +93,33 @@ pub fn format_event(row: &Value) -> String {
         "priority_resume" => format!("{p}RESUMED after {}", duration(&row["paused_seconds"])),
         "disconnected" => format!("{p}Pool connection lost: {} | retrying in {} s", s(row, "error"), s(row, "retry_seconds")),
         "profile_fallback" => format!("{p}Pool without gzip proofs: using kernel {} with K={}", s(row, "variant"), s(row, "k")),
+        "tune_start" => format!("{p}Kernel tuning: timing {} kernel variants on this GPU (K={}, about {} s, once per GPU/driver/build/power limit)", s(row, "variants"), s(row, "k"), number(&row["seconds"], 0)),
+        "tune_result" => {
+            let mut out = format!("{p}Kernel tuning: using {} ({} % against the default, {} rounds)", s(row, "kernel_variant"), signed(&row["gain_percent"]), s(row, "rounds"));
+            if row["significant"] == false && row["fastest"] != row["kernel_variant"] {
+                out += &format!("\n           fastest was {} ({} %), within the measuring error: default kept", s(row, "fastest"), signed(&row["fastest_gain_percent"]));
+            }
+            if let Some(rows) = row["results"].as_array() {
+                for r in rows {
+                    let state = if r["valid"] == true {
+                        let g = signed(&json!((1.0 / r["relative"].as_f64().unwrap_or(1.0) - 1.0) * 100.0));
+                        if r["samples"].as_u64().unwrap_or(0) > 1 {
+                            format!("{} ms  {g} ± {} %", number(&r["ms"], 3), number(&json!(r["error"].as_f64().unwrap_or(0.0) * 100.0), 2))
+                        } else {
+                            format!("{} ms  {g} % (clearly slower, timed once)", number(&r["ms"], 3))
+                        }
+                    } else { "WRONG RESULTS, excluded".into() };
+                    out += &format!("\n           {:<12} {}", clean(r["name"].as_str().unwrap_or(""), 32), state);
+                }
+            }
+            if let Some(path) = row["cache"].get("Ok").and_then(|v| v.as_str()) {
+                out += &format!("\n           stored in {} (--tune measures again)", clean(path, 1024));
+            }
+            out
+        }
+        "tune_cached" => format!("{p}Kernel tuning: using {} ({} %, stored result; --tune measures again)", s(row, "kernel_variant"), signed(&row["gain_percent"])),
+        "tune_skipped" => format!("{p}Kernel tuning skipped: {} | using {}", s(row, "reason"), s(row, "kernel_variant")),
+        "tune_fixed" => format!("{p}Kernel variant {} ({})", s(row, "kernel_variant"), s(row, "reason")),
         "error" => format!("{p}ERROR: {}", s(row, "error")),
         _ => {
             let mut m = row.as_object().cloned().unwrap_or_default();

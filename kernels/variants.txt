@@ -1,0 +1,22 @@
+# Variants of kernel 780 compiled into the miner. Started with --tune, the miner validates and times
+# all of them on the GPU and keeps the fastest (README, "Kernel tuning").
+#
+# Format: NAME PTXAS-OPTIONS [KNOB=VALUE ...]
+#   NAME           unique, letters/digits/-/_/. (shown in the log and stored in the tuning cache)
+#   PTXAS-OPTIONS  comma-separated options for ptxas, e.g. -O1 or -O3,-maxrregcount=255
+#   KNOB=VALUE     K780_<KNOB> placement knob of kernels/kernel780.cu (P0..P7, PL, MID)
+# The first line is the default (used unless --tune found a faster one). Results of tools/tune-wizard.py are added
+# below with their origin.
+
+# Measured best on RTX PRO 4500 Blackwell, CUDA 13.4/13.5, 150 W (2026-11-13).
+u6        -O1
+# ptxas optimisation levels of the same placement (-O3 is nvcc's default).
+u6-O2     -O2
+u6-O3     -O3
+# Runners-up of the placement sweep (ncu cycles within 0.4 % of u6). Further runners-up
+# (P2=11, P2=13, P6=28) compile to the same code as u6 with CUDA 13.4/13.5 and are left out.
+y5m1      -O1  P5=26
+w5q21     -O1  PL=21
+u10       -O1  P0=8 PL=24
+# Placement of the previous kernel (1b51df4) in the current source layout.
+p1b51     -O1  P0=8 PL=0 MID=0

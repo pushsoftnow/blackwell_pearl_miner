@@ -41,6 +41,7 @@ pub struct MineArgs {
     pub log_path: PathBuf,
     pub nonce_start: Option<u64>,
     pub reconnect_seconds: u64,
+    pub tune: crate::tune::Options,
 }
 
 static SIGNALS: AtomicU32 = AtomicU32::new(0);
@@ -105,6 +106,20 @@ fn mine(a: &MineArgs, state: &Arc<State>, log: &Log) -> Result<i32> {
     let info = device.info()?;
     let guard = Guard::start(&info.pci_bus_id, a.power_limit, a.max_temp).context("NVML telemetry")?;
     anyhow::ensure!(info.capability == (12, 0), "the kernels are built for compute capability 12.0 (found {} with {}.{})", info.name, info.capability.0, info.capability.1);
+    {
+        let mut nvml = Nvml::open(&info.pci_bus_id).context("NVML")?;
+        let limit = nvml.power_limit_w().ok();
+        // With priority programs or --background the GPU is shared: measure only while nobody else computes.
+        let busy = if a.priority.is_empty() && !a.background {
+            false
+        } else {
+            let me = std::process::id();
+            let _ = nvml.active();
+            std::thread::sleep(Duration::from_millis(1500));
+            nvml.active().map(|m| m.iter().any(|(&pid, &util)| pid != me && util >= a.priority_util)).unwrap_or(true)
+        };
+        crate::tune::choose(&info.name, profile, limit, &a.tune, busy, &interrupted, &|event, row| log.event(event, row))?;
+    }
 
     let (proof_tx, proof_rx) = bounded::<Option<ProofTask>>(a.queue_size);
     let (submit_tx, submit_rx) = bounded::<Option<VerifiedShare>>(a.queue_size);

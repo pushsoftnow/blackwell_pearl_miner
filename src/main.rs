@@ -10,6 +10,7 @@ mod priority;
 mod proof;
 mod protocol;
 mod state;
+mod tune;
 mod workers;
 
 use anyhow::{bail, ensure, Result};
@@ -90,6 +91,24 @@ struct Cli {
     /// Offline self-test: mine a fixed job and verify proofs with the official verifier
     #[arg(long)]
     self_test: bool,
+    /// Time all kernel variants on this GPU, mine with the fastest and store the result
+    #[arg(long, alias = "retune")]
+    tune: bool,
+    /// Ignore a stored tuning result and use the default kernel variant
+    #[arg(long, conflicts_with_all = ["tune", "kernel_variant"])]
+    no_tune: bool,
+    /// Use this kernel variant (name from kernels/variants.txt) without tuning
+    #[arg(long, value_name = "NAME", conflicts_with = "tune")]
+    kernel_variant: Option<String>,
+    /// Measuring time of the kernel tuning
+    #[arg(long, default_value_t = 40.0, value_name = "SECONDS")]
+    tune_seconds: f64,
+    /// Run the kernel tuning (or show its stored result; with --tune always measure) and exit
+    #[arg(long)]
+    tune_only: bool,
+    /// Compare candidate kernel libraries (tools/tune-wizard.py) with the built-in default, print JSON and exit
+    #[arg(long, value_name = "LIB", hide = true)]
+    tune_candidate: Vec<PathBuf>,
 }
 
 /// Self-test job: fixed header, block target (frequent hits at these dimensions).
@@ -101,6 +120,19 @@ fn test_job(profile: Profile) -> Result<MiningJob> {
 }
 
 fn self_test(device: i32) -> Result<()> {
+    self_test_proofs(device)?;
+    // Every compiled variant of kernel 780 must report exactly the default's hits.
+    let support = kernels::get()?;
+    let profile = Profile::new(Kernel::K780, 16384)?;
+    let m = tune::measure(profile, &support.k780_variants, 0.0, 3, 3, &|| false, &mut |_, _| {})?;
+    let bad: Vec<&str> = (0..m.valid.len()).filter(|&i| !m.valid[i]).map(|i| kernels::VARIANTS[i].0).collect();
+    ensure!(bad.is_empty(), "kernel 780 variants with wrong results: {}", bad.join(", "));
+    println!("kernel 780: {} variants agree with the default ({} hits compared)", m.valid.len(), m.hits);
+    println!("self-test passed");
+    Ok(())
+}
+
+fn self_test_proofs(device: i32) -> Result<()> {
     let dev = cuda::Device::open(device)?;
     let info = dev.info()?;
     ensure!(info.capability == (12, 0), "the kernels are built for compute capability 12.0 (found {} with {}.{})", info.name, info.capability.0, info.capability.1);
@@ -122,7 +154,42 @@ fn self_test(device: i32) -> Result<()> {
         ensure!(verified > 0, "kernel {} K={} produced no hits", p.variant(), p.k);
         println!("kernel {} K={}: {verified} proofs verified", p.variant(), p.k);
     }
-    println!("self-test passed");
+    Ok(())
+}
+
+/// --tune-candidate: candidate libraries against the default variant (interleaved), JSON on stdout.
+/// With --tune-seconds 0 every kernel runs twice (warm-up and one round), for ncu.
+fn tune_candidates(device: i32, k: usize, libs: &[PathBuf], seconds: f64) -> Result<()> {
+    let _dev = cuda::Device::open(device)?;
+    let support = kernels::get()?;
+    let mut fns = vec![support.k780_variants[0]];
+    for lib in libs {
+        fns.push(kernels::load_candidate(lib)?);
+    }
+    let profile = Profile::new(Kernel::K780, k)?;
+    let (min_rounds, max_rounds) = if seconds <= 0.0 { (1, 1) } else { (3, 100_000) };
+    let m = tune::measure(profile, &fns, seconds, min_rounds, max_rounds, &|| false, &mut |_, _| {})?;
+    let mut names = vec![kernels::VARIANTS[0].0.to_string()];
+    names.extend(libs.iter().map(|l| l.display().to_string()));
+    let s = m.scores(&names);
+    println!("{}", serde_json::json!({"k": k, "rounds": m.rounds, "hits": m.hits, "default": kernels::VARIANTS[0].0, "default_ms": s[0].ms,
+        "candidates": s[1..].iter().map(|c| serde_json::json!({"lib": c.name, "valid": c.valid, "ms": c.ms, "relative": c.relative, "error": c.error})).collect::<Vec<_>>()}));
+    Ok(())
+}
+
+/// --tune-only: tuning (or the stored result), then exit.
+fn tune_only(device: i32, k: usize, opts: &tune::Options) -> Result<()> {
+    let dev = cuda::Device::open(device)?;
+    let info = dev.info()?;
+    ensure!(info.capability == (12, 0), "the kernels are built for compute capability 12.0 (found {})", info.name);
+    let limit = nvml::Nvml::open(&info.pci_bus_id).and_then(|n| n.power_limit_w()).ok();
+    let profile = Profile::new(Kernel::K780, k)?;
+    tune::choose(&info.name, profile, limit, opts, false, &|| false, &|event, row| {
+        let mut row = row;
+        row["event"] = serde_json::json!(event);
+        row["time"] = serde_json::json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0));
+        println!("{}", console::format_event(&row));
+    })?;
     Ok(())
 }
 
@@ -131,6 +198,18 @@ fn main() -> Result<()> {
     if cli.self_test {
         return self_test(cli.device);
     }
+    if !cli.tune_candidate.is_empty() {
+        return tune_candidates(cli.device, cli.k.unwrap_or(16384), &cli.tune_candidate, cli.tune_seconds);
+    }
+    let tune_opts = tune::Options {
+        tune: cli.tune,
+        if_missing: cli.tune_only,
+        disabled: cli.no_tune,
+        force: cli.kernel_variant.clone(),
+        seconds: cli.tune_seconds,
+        progress: !cli.json && std::io::IsTerminal::is_terminal(&std::io::stderr()),
+    };
+    ensure!(cli.tune_seconds >= 0.0, "--tune-seconds must not be negative");
     let kernel = match cli.variant {
         None | Some(780) => Kernel::K780,
         Some(448) => Kernel::K448,
@@ -144,6 +223,10 @@ fn main() -> Result<()> {
         Kernel::K780 => 65536,
     });
     let profile = Profile::new(kernel, k)?;
+    if cli.tune_only {
+        ensure!(kernel == Kernel::K780, "kernel tuning applies to kernel 780");
+        return tune_only(cli.device, k, &tune_opts);
+    }
     let Some(pool) = cli.pool else { bail!("--pool HOST:PORT is required (or use --self-test)") };
     let Some(wallet) = cli.wallet else { bail!("--wallet is required") };
     ensure!((1.0..=1000.0).contains(&cli.priority_slowdown), "--priority-slowdown must be 1..1000 percent");
@@ -173,6 +256,7 @@ fn main() -> Result<()> {
         log_path,
         nonce_start: None,
         reconnect_seconds: cli.reconnect_seconds,
+        tune: tune_opts,
     })?;
     std::process::exit(code);
 }
