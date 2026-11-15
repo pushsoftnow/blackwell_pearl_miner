@@ -29,9 +29,9 @@ No Kryptex account yet? Sign up here: **[kryptex.com](https://www.kryptex.com/?r
 
 ## Requirements
 
-* Linux x86_64
+* Linux x86_64, or Windows 10/11 x86_64 ([Windows](#windows), new and not yet tested on real hardware)
 * NVIDIA GPU with compute capability 12.0 and at least 2 GiB of free memory
-* NVIDIA driver with CUDA 12.8 support or newer (provides `libcuda.so.1` and `libnvidia-ml.so.1`)
+* NVIDIA driver with CUDA 12.8 support or newer (provides `libcuda.so.1`/`nvcuda.dll` and NVML)
 * CUDA Toolkit 12.8 or newer with `nvcc` (build only), and a host compiler supported by it
 * Rust stable toolchain (`cargo`)
 
@@ -49,7 +49,42 @@ cargo build --release
 If the repository was cloned without `--recursive`, run `git submodule update --init --recursive`.
 The CUDA Toolkit is taken from `$CUDA_HOME` (or `$CUDA_PATH`, default `/usr/local/cuda`);
 `$NVCC` overrides the compiler. The kernels are compiled into a library that is embedded in the
-binary, so `target/release/bpm` is the only file needed at run time.
+binary, so `target/release/bpm` (Windows: `bpm.exe`) is the only file needed at run time.
+
+### Windows
+
+Windows support is new: it builds and runs the same code as on Linux, but has not been
+tested on real Windows hardware yet. Reports (working or not) are very welcome as a GitHub issue.
+
+Install, in this order:
+
+1. NVIDIA driver (recent Game Ready/Studio driver)
+2. [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+   with "Desktop development with C++" (needed by Rust and by nvcc; use a version your CUDA
+   Toolkit supports)
+3. [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) 12.8 or newer (sets `CUDA_PATH`)
+4. [Rust](https://rustup.rs) (default MSVC toolchain) and [Git](https://git-scm.com/download/win)
+
+Then, in a new PowerShell window:
+
+```powershell
+git clone --recursive https://github.com/pushsoftnow/blackwell_pearl_miner.git
+cd blackwell_pearl_miner
+cargo build --release
+.\target\release\bpm.exe --self-test
+.\target\release\bpm.exe --pool prl-eu.kryptex.network:7048 --wallet YOUR_KRYPTEX_ID --worker rig1
+```
+
+Differences to Linux:
+
+* The kernel library is a DLL embedded in `bpm.exe`; at start it is written to `%TEMP%\bpm`.
+  The tuning result is stored in `%LOCALAPPDATA%\bpm\tune.json`.
+* `--background` pauses only on NVML's per-process GPU utilisation (no CPU-time signal);
+  whether the driver reports it under Windows is not verified yet. `--priority PATH` is Linux-only.
+* `--power-limit` only checks the limit. Set limits and clocks yourself (as administrator
+  with `nvidia-smi -pl`, or with a tool such as MSI Afterburner).
+* The tuning wizard (`tools/tune-wizard.py`) is Linux-only for now; `--tune` works.
+* Alternatively, the Linux build runs in WSL2 with the Windows NVIDIA driver.
 
 ## Usage
 
@@ -102,17 +137,17 @@ an RTX PRO 4500 Blackwell). Started with `--tune`, it checks every variant again
 random order, and mines with the fastest. Another variant replaces the default only if it is
 faster by more than twice its measuring error and by at least 0.05 %.
 
-The result is stored in `~/.cache/bpm/tune.json` per GPU model, driver, build, K and power limit
-and reused on later starts without `--tune` as long as these stay the same; otherwise the
-default is used again. `--tune` measures again, `--no-tune` ignores a stored result,
+The result is stored in `~/.cache/bpm/tune.json` (Windows: `%LOCALAPPDATA%\bpm\tune.json`) per
+GPU model, driver, build, K and power limit and reused on later starts without `--tune` as
+long as these stay the same; otherwise the default is used again. `--tune` measures again, `--no-tune` ignores a stored result,
 `--kernel-variant NAME` picks a variant and `--tune-only` only runs the tuning (or shows the
 stored result) and exits. With `--priority` or `--background` the tuning is skipped while
 another process computes on the GPU. `--self-test` checks all variants as well.
 
 #### Tuning wizard (optional)
 
-[`tools/tune-wizard.py`](tools/tune-wizard.py) searches for new variants on your GPU (Python 3,
-standard library only):
+[`tools/tune-wizard.py`](tools/tune-wizard.py) searches for new variants on your GPU (Linux,
+Python 3, standard library only):
 
 ```bash
 python3 tools/tune-wizard.py

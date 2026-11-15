@@ -72,8 +72,7 @@ struct Cache {
 }
 
 fn cache_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(base.join("bpm/tune.json"))
+    Some(crate::platform::cache_dir()?.join("bpm").join("tune.json"))
 }
 
 fn load_cache() -> Cache {
@@ -81,7 +80,7 @@ fn load_cache() -> Cache {
 }
 
 fn store(entry: Entry) -> Result<PathBuf> {
-    let Some(path) = cache_path() else { bail!("neither XDG_CACHE_HOME nor HOME is set") };
+    let Some(path) = cache_path() else { bail!("no cache directory (XDG_CACHE_HOME/HOME, or LOCALAPPDATA on Windows)") };
     let mut cache = load_cache();
     cache.version = 1;
     cache.entries.retain(|e| e.key != entry.key);
@@ -101,6 +100,9 @@ pub fn driver_version() -> String {
         if let Some(v) = t.split_whitespace().find(|w| w.contains('.') && w.chars().all(|c| c.is_ascii_digit() || c == '.')) {
             return v.to_string();
         }
+    }
+    if let Some(v) = crate::nvml::driver_version() {
+        return v;
     }
     crate::cuda::driver_version().map(|v| format!("cuda-{}.{}", v / 1000, v % 1000 / 10)).unwrap_or_else(|_| "unknown".into())
 }

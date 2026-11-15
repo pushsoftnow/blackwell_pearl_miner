@@ -1,8 +1,10 @@
 //! The CUDA kernel library (built by build.rs), embedded in the binary and loaded from
-//! memory with memfd_create + dlopen. Kernel 780 exists in several variants (kernels/variants.txt);
-//! the tuning (tune.rs) selects one before any CUDA graph is captured.
+//! memory (Linux: memfd + dlopen; Windows: a DLL file in %TEMP%\\bpm). Kernel 780 exists in
+//! several variants (kernels/variants.txt); the tuning (tune.rs) selects one before any CUDA
+//! graph is captured.
 use anyhow::{bail, Result};
-use std::ffi::{c_void, CString};
+use crate::platform::Lib;
+use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,7 +13,7 @@ include!(concat!(env!("OUT_DIR"), "/variants.rs"));
 type P = *mut c_void;
 type C = *const c_void;
 
-static LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libpearlkernels.so"));
+static LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pearlkernels.bin"));
 
 pub type K780Fn = unsafe extern "C" fn(C, C, C, C, c_int, c_int, c_int, C, C, P, P, c_int, P) -> c_int;
 
@@ -36,7 +38,6 @@ pub fn selected() -> usize {
 }
 
 pub struct Kernels {
-    _handle: *mut c_void,
     pub k780_variants: Vec<K780Fn>,
     pub k448: unsafe extern "C" fn(C, C, C, C, P, P, c_int, P) -> c_int,
     pub merkle_init: unsafe extern "C" fn(C, P, c_int, P) -> c_int,
@@ -51,52 +52,15 @@ pub struct Kernels {
 unsafe impl Send for Kernels {}
 unsafe impl Sync for Kernels {}
 
-fn open() -> Result<*mut c_void> {
-    open_bytes(LIBRARY)
-}
-
-fn open_bytes(bytes: &[u8]) -> Result<*mut c_void> {
-    unsafe {
-        let name = CString::new("pearl-kernels")?;
-        let fd = libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC);
-        if fd < 0 {
-            bail!("memfd_create failed");
-        }
-        let mut written = 0;
-        while written < bytes.len() {
-            let n = libc::write(fd, bytes[written..].as_ptr().cast(), bytes.len() - written);
-            if n <= 0 {
-                libc::close(fd);
-                bail!("cannot write the embedded kernel library");
-            }
-            written += n as usize;
-        }
-        // The memfd stays open: the loader identifies libraries by path.
-        let path = CString::new(format!("/proc/self/fd/{fd}"))?;
-        let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
-        if handle.is_null() {
-            libc::close(fd);
-            let err = std::ffi::CStr::from_ptr(libc::dlerror()).to_string_lossy().into_owned();
-            bail!("cannot load the kernel library: {err}");
-        }
-        Ok(handle)
-    }
-}
-
-fn sym<T: Copy>(handle: *mut c_void, name: &str) -> Result<T> {
-    let c = CString::new(name)?;
-    let p = unsafe { libc::dlsym(handle, c.as_ptr()) };
-    if p.is_null() {
-        bail!("missing kernel symbol {name}");
-    }
-    Ok(unsafe { std::mem::transmute_copy(&p) })
+fn sym<T: Copy>(lib: &Lib, name: &str) -> Result<T> {
+    lib.sym(name).map_err(|_| anyhow::anyhow!("missing kernel symbol {name}"))
 }
 
 impl Kernels {
     pub fn load() -> Result<Self> {
-        let h = open()?;
-        Ok(Kernels {
-            _handle: h,
+        let lib = Lib::open_bytes(LIBRARY, &format!("pearlkernels-{}", library_hash()))?;
+        let h = &lib;
+        let k = Kernels {
             k780_variants: (0..VARIANTS.len()).map(|i| sym(h, &format!("pm_k780_launch_{i}"))).collect::<Result<_>>()?,
             k448: sym(h, "pm_k448_launch")?,
             merkle_init: sym(h, "pm_merkle_init")?,
@@ -107,7 +71,9 @@ impl Kernels {
             prepare_packed: sym(h, "pm_prepare_packed")?,
             commit: sym(h, "pm_commit")?,
             noise: sym(h, "pm_noise")?,
-        })
+        };
+        lib.leak();
+        Ok(k)
     }
 
     /// The selected kernel 780 variant.
@@ -119,8 +85,11 @@ impl Kernels {
 /// Loads `pm_k780_launch` from an external candidate library (tools/tune-wizard.py).
 pub fn load_candidate(path: &std::path::Path) -> Result<K780Fn> {
     let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
-    let h = open_bytes(&bytes)?;
-    sym(h, "pm_k780_launch")
+    let tag = format!("candidate-{:016x}", bytes.iter().fold(0xcbf29ce484222325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3)));
+    let lib = Lib::open_bytes(&bytes, &tag)?;
+    let f = sym(&lib, "pm_k780_launch")?;
+    lib.leak();
+    Ok(f)
 }
 
 static CELL: std::sync::OnceLock<std::result::Result<Kernels, String>> = std::sync::OnceLock::new();

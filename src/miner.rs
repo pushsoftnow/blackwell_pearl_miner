@@ -58,10 +58,7 @@ fn interrupted() -> bool {
 }
 
 fn cpu_seconds() -> f64 {
-    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
-    let t = |tv: libc::timeval| tv.tv_sec as f64 + tv.tv_usec as f64 / 1e6;
-    t(u.ru_utime) + t(u.ru_stime)
+    crate::platform::cpu_seconds()
 }
 
 fn random_nonce() -> u64 {

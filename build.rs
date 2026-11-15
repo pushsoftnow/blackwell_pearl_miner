@@ -1,5 +1,7 @@
-//! Builds the CUDA kernel library with nvcc and embeds it in the binary.
+//! Builds the CUDA kernel library with nvcc and embeds it in the binary (Linux: shared object,
+//! Windows: DLL; on Windows nvcc uses the MSVC compiler that Rust's MSVC toolchain needs anyway).
 //! CUDA toolkit: $CUDA_HOME (or $CUDA_PATH), default /usr/local/cuda; nvcc may be overridden with $NVCC.
+//! BPM_KERNEL_STUB=1 embeds an empty library (only for `cargo check` of other targets).
 //! Kernel 780 is compiled once per line of kernels/variants.txt (launch symbol pm_k780_launch_<i>).
 use std::{env, fmt::Write as _, fs, path::PathBuf, process::Command};
 
@@ -49,27 +51,47 @@ fn parse_variants(text: &str) -> Vec<Variant> {
 fn main() {
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let windows = env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows";
     let cuda = PathBuf::from(env::var("CUDA_HOME").or_else(|_| env::var("CUDA_PATH")).unwrap_or("/usr/local/cuda".into()));
-    let nvcc = env::var("NVCC").map(PathBuf::from).unwrap_or(cuda.join("bin/nvcc"));
+    let nvcc = env::var("NVCC").map(PathBuf::from).unwrap_or(cuda.join("bin").join(if windows { "nvcc.exe" } else { "nvcc" }));
     let pearl = root.join("third_party/pearl/miner/pearl-gemm");
     let cutlass = pearl.join("third_party/cutlass/include");
-    for var in ["CUDA_HOME", "CUDA_PATH", "NVCC"] {
+    for var in ["CUDA_HOME", "CUDA_PATH", "NVCC", "BPM_KERNEL_STUB"] {
         println!("cargo:rerun-if-env-changed={var}");
     }
     println!("cargo:rerun-if-changed=kernels");
+    let variants = parse_variants(&fs::read_to_string(root.join("kernels/variants.txt")).expect("kernels/variants.txt"));
+    write_table(&variants, &out);
+    link_driver(&cuda, windows);
+    if env::var_os("BPM_KERNEL_STUB").is_some() {
+        fs::write(out.join("pearlkernels.bin"), b"").unwrap();
+        return;
+    }
     assert!(
         cutlass.join("cutlass/cutlass.h").is_file(),
         "third-party sources missing: run `git submodule update --init --recursive`"
     );
-    assert!(nvcc.is_file(), "nvcc not found at {} (set CUDA_HOME or NVCC)", nvcc.display());
-
-    let variants = parse_variants(&fs::read_to_string(root.join("kernels/variants.txt")).expect("kernels/variants.txt"));
+    assert!(nvcc.is_file(), "nvcc not found at {} (set CUDA_HOME/CUDA_PATH or NVCC)", nvcc.display());
     let mut includes = vec![format!("-I{}", pearl.join("csrc").display()), format!("-I{}", cutlass.display())];
     let cccl = cuda.join("include/cccl");
     if cccl.is_dir() {
         includes.push(format!("-I{}", cccl.display()));
     }
-    let common = ["-O3", "-std=c++20", "--expt-relaxed-constexpr", "-gencode=arch=compute_120a,code=sm_120a", "-Xcompiler", "-fPIC", "-diag-suppress", "549"];
+    let mut common: Vec<String> = ["-O3", "-std=c++20", "--expt-relaxed-constexpr", "-gencode=arch=compute_120a,code=sm_120a", "-diag-suppress", "549"].map(String::from).to_vec();
+    common.extend(if windows { ["-Xcompiler", "/Zc:__cplusplus"] } else { ["-Xcompiler", "-fPIC"] }.map(String::from));
+    // Windows: nvcc needs cl.exe; take the one Rust's MSVC toolchain uses (with its INCLUDE/LIB).
+    let msvc = if windows { find_msvc() } else { None };
+    let nvcc_cmd = || {
+        let mut cmd = Command::new(&nvcc);
+        if let Some(tool) = &msvc {
+            cmd.arg("-ccbin").arg(tool.path().parent().unwrap());
+            for (k, v) in tool.get_envs() {
+                cmd.env(k, v);
+            }
+        }
+        cmd
+    };
+    let obj_ext = if windows { "obj" } else { "o" };
     // (object name, source, extra arguments)
     let mut units: Vec<(String, &str, Vec<String>)> = vec![
         ("kernel448".into(), "kernel448", vec!["--ptxas-options=-O3".into()]),
@@ -87,8 +109,8 @@ fn main() {
         let children: Vec<_> = chunk
             .iter()
             .map(|(obj, src, extra)| {
-                let mut cmd = Command::new(&nvcc);
-                cmd.args(common).args(extra).args(&includes).arg("-c").arg(root.join(format!("kernels/{src}.cu"))).arg("-o").arg(out.join(format!("{obj}.o")));
+                let mut cmd = nvcc_cmd();
+                cmd.args(&common).args(extra).args(&includes).arg("-c").arg(root.join(format!("kernels/{src}.cu"))).arg("-o").arg(out.join(format!("{obj}.{obj_ext}")));
                 (obj.clone(), cmd.spawn().unwrap_or_else(|e| panic!("cannot run {}: {e}", nvcc.display())))
             })
             .collect();
@@ -96,18 +118,35 @@ fn main() {
             assert!(child.wait().unwrap().success(), "nvcc failed for {obj}");
         }
     }
-    let status = Command::new(&nvcc)
+    let lib = out.join(if windows { "pearlkernels.dll" } else { "libpearlkernels.so" });
+    let stubs = if windows { cuda.join("lib").join("x64") } else { cuda.join("lib64/stubs") };
+    let status = nvcc_cmd()
         .args(["-shared", "-gencode=arch=compute_120a,code=sm_120a"])
-        .args(units.iter().map(|(o, _, _)| out.join(format!("{o}.o"))))
-        .arg(format!("-L{}", cuda.join("lib64/stubs").display()))
+        .args(units.iter().map(|(o, _, _)| out.join(format!("{o}.{obj_ext}"))))
+        .arg(format!("-L{}", stubs.display()))
         .args(["-lcuda", "-o"])
-        .arg(out.join("libpearlkernels.so"))
+        .arg(&lib)
         .status()
         .expect("nvcc link");
     assert!(status.success(), "linking the kernel library failed");
+    fs::copy(&lib, out.join("pearlkernels.bin")).unwrap();
+}
 
+fn find_msvc() -> Option<cc::Tool> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let target = env::var("TARGET").unwrap();
+    let tool = cc::windows_registry::find_tool(&target, "cl.exe");
+    if tool.is_none() {
+        println!("cargo:warning=cl.exe not found via the MSVC installation; nvcc will look for it in PATH");
+    }
+    tool
+}
+
+fn write_table(variants: &[Variant], out: &std::path::Path) {
     let mut table = String::from("/// Kernel 780 variants: (name, ptxas options and knobs), launch symbol pm_k780_launch_<index>.\npub const VARIANTS: &[(&str, &str)] = &[\n");
-    for v in &variants {
+    for v in variants {
         let mut desc = v.ptxas.join(",");
         for (k, val) in &v.knobs {
             write!(desc, " {k}={val}").unwrap();
@@ -116,9 +155,15 @@ fn main() {
     }
     table.push_str("];\n");
     fs::write(out.join("variants.rs"), table).unwrap();
+}
 
-    // The host binary uses the CUDA driver API (libcuda.so.1 from the NVIDIA driver).
-    println!("cargo:rustc-link-search=native={}", cuda.join("lib64/stubs").display());
-    println!("cargo:rustc-link-search=native={}", cuda.join("targets/x86_64-linux/lib/stubs").display());
+/// The host binary uses the CUDA driver API (libcuda.so.1 / nvcuda.dll from the NVIDIA driver).
+fn link_driver(cuda: &std::path::Path, windows: bool) {
+    if windows {
+        println!("cargo:rustc-link-search=native={}", cuda.join("lib").join("x64").display());
+    } else {
+        println!("cargo:rustc-link-search=native={}", cuda.join("lib64/stubs").display());
+        println!("cargo:rustc-link-search=native={}", cuda.join("targets/x86_64-linux/lib/stubs").display());
+    }
     println!("cargo:rustc-link-lib=dylib=cuda");
 }

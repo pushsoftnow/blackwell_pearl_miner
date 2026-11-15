@@ -33,10 +33,8 @@ pub fn duration(v: &Value) -> String {
 }
 
 fn stamp(row: &Value) -> String {
-    let t = row["time"].as_f64().unwrap_or(0.0) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    format!("[{:02}:{:02}:{:02}] ", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    let [_, _, _, h, m, s] = crate::platform::local_time(row["time"].as_f64().unwrap_or(0.0) as i64);
+    format!("[{h:02}:{m:02}:{s:02}] ")
 }
 
 pub fn format_event(row: &Value) -> String {

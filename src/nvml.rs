@@ -1,7 +1,8 @@
-//! Read-only NVML (libnvidia-ml.so.1, shipped with the driver): telemetry guard,
+//! Read-only NVML (libnvidia-ml.so.1 or nvml.dll, shipped with the driver): telemetry guard,
 //! GPU process list and per-process SM utilisation.
 use anyhow::{bail, Result};
 use std::collections::{HashMap, HashSet};
+use crate::platform::{self, Lib};
 use std::ffi::{c_void, CString};
 use std::os::raw::{c_int, c_uint};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,11 +36,13 @@ struct UtilSample {
 type Dev = *mut c_void;
 
 pub struct Nvml {
-    lib: *mut c_void,
+    _lib: Lib,
     dev: Dev,
     temperature: unsafe extern "C" fn(Dev, c_uint, *mut c_uint) -> c_int,
     power_limit: unsafe extern "C" fn(Dev, *mut c_uint) -> c_int,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     compute: unsafe extern "C" fn(Dev, *mut c_uint, *mut ProcessInfo) -> c_int,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     graphics: unsafe extern "C" fn(Dev, *mut c_uint, *mut ProcessInfo) -> c_int,
     utilization: unsafe extern "C" fn(Dev, *mut UtilSample, *mut c_uint, u64) -> c_int,
     shutdown: unsafe extern "C" fn() -> c_int,
@@ -58,27 +61,15 @@ impl Nvml {
     /// Device by PCI bus id (as reported by CUDA), so CUDA and NVML numbering may differ.
     pub fn open(pci_bus_id: &str) -> Result<Self> {
         unsafe {
-            let name = CString::new("libnvidia-ml.so.1")?;
-            let lib = libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
-            if lib.is_null() {
-                bail!("libnvidia-ml.so.1 is unavailable");
-            }
-            let sym = |n: &str| -> Result<*mut c_void> {
-                let c = CString::new(n)?;
-                let p = libc::dlsym(lib, c.as_ptr());
-                if p.is_null() {
-                    bail!("missing NVML symbol {n}");
-                }
-                Ok(p)
-            };
+            let lib = Lib::open(platform::NVML).map_err(|e| anyhow::anyhow!("NVML is unavailable: {e}"))?;
+            let sym = |n: &str| -> Result<*mut c_void> { lib.sym::<*mut c_void>(n) };
             let init: unsafe extern "C" fn() -> c_int = std::mem::transmute(sym("nvmlInit_v2")?);
             check(init(), "init")?;
-            let handle: unsafe extern "C" fn(*const libc::c_char, *mut Dev) -> c_int = std::mem::transmute(sym("nvmlDeviceGetHandleByPciBusId_v2")?);
+            let handle: unsafe extern "C" fn(*const std::os::raw::c_char, *mut Dev) -> c_int = std::mem::transmute(sym("nvmlDeviceGetHandleByPciBusId_v2")?);
             let mut dev = std::ptr::null_mut();
             let bus = CString::new(pci_bus_id)?;
             check(handle(bus.as_ptr(), &mut dev), "device handle")?;
             let mut n = Nvml {
-                lib,
                 dev,
                 temperature: std::mem::transmute(sym("nvmlDeviceGetTemperature")?),
                 power_limit: std::mem::transmute(sym("nvmlDeviceGetPowerManagementLimit")?),
@@ -87,6 +78,7 @@ impl Nvml {
                 utilization: std::mem::transmute(sym("nvmlDeviceGetProcessUtilization")?),
                 shutdown: std::mem::transmute(sym("nvmlShutdown")?),
                 last_timestamp: 0,
+                _lib: lib,
             };
             n.active()?; // consume samples older than the start
             Ok(n)
@@ -104,6 +96,7 @@ impl Nvml {
         Ok(v as f64 / 1000.0)
     }
     /// PIDs with a context on the GPU (compute and graphics).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn pids(&self) -> Result<HashSet<u32>> {
         let mut found = HashSet::new();
         for f in [self.compute, self.graphics] {
@@ -151,11 +144,27 @@ impl Nvml {
     }
 }
 
+/// Driver version string from NVML (e.g. "595.99"), without a device handle.
+pub fn driver_version() -> Option<String> {
+    let lib = Lib::open(platform::NVML).ok()?;
+    unsafe {
+        let init: unsafe extern "C" fn() -> c_int = lib.sym("nvmlInit_v2").ok()?;
+        let get: unsafe extern "C" fn(*mut std::os::raw::c_char, c_uint) -> c_int = lib.sym("nvmlSystemGetDriverVersion").ok()?;
+        let shutdown: unsafe extern "C" fn() -> c_int = lib.sym("nvmlShutdown").ok()?;
+        if init() != 0 {
+            return None;
+        }
+        let mut buf = [0 as std::os::raw::c_char; 96];
+        let rc = get(buf.as_mut_ptr(), buf.len() as c_uint);
+        shutdown();
+        (rc == 0).then(|| std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned())
+    }
+}
+
 impl Drop for Nvml {
     fn drop(&mut self) {
         unsafe {
             (self.shutdown)();
-            libc::dlclose(self.lib);
         }
     }
 }

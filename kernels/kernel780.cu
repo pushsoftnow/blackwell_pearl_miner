@@ -2,6 +2,12 @@
 // Mining kernel on the packed rank-128 basis.
 // CTA tile 160x256 (8 warps, warp tile 80x64), one barrier per K32 step. Operands are rebuilt
 // from the basis in shared memory; each step stores the next stage while issuing MMAs.
+// Exported launch functions (Windows DLLs export only marked symbols).
+#ifdef _WIN32
+#define PM_API extern "C" __declspec(dllexport)
+#else
+#define PM_API extern "C"
+#endif
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <utility>
@@ -391,7 +397,7 @@ __global__ __launch_bounds__(128) void reorder_pairs(Pair *pairs, int k) {
 
 // Packed basis (pack_basis_frag) for A and B, packed pair indices for A and B.
 // Covers the first M/160*160 rows; the nonce row is never sampled.
-extern "C" int K780_LAUNCH(const void *basA, const void *basB, const void *ia, const void *ib, int m, int n, int k,
+PM_API int K780_LAUNCH(const void *basA, const void *basB, const void *ia, const void *ib, int m, int n, int k,
                               const void *key, const void *target, void *count, void *ids, int cap, void *stream) {
   using namespace K780_NS;
   if (m % 16 || n % BN || k % 128 || k < 256 || k > 65536) return cudaErrorInvalidValue;

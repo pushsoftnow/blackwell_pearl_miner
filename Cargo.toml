@@ -29,6 +29,9 @@ sha2 = "0.10"
 pearl-blake3 = { path = "third_party/pearl/pearl-blake3", features = ["serde"] }
 zk-pow = { path = "third_party/pearl/zk-pow" }
 
+[build-dependencies]
+cc = "1.11"
+
 [profile.release]
 opt-level = 3
 codegen-units = 1

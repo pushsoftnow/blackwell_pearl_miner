@@ -343,6 +343,9 @@ class Measurer:
 
 def main():
     global AUTO_YES
+    if os.name != "posix":
+        sys.exit("The tuning wizard runs on Linux only for now (it builds Linux kernel libraries and pauses\n"
+                 "GPU processes with signals). On Windows use `bpm.exe --tune`, or run the wizard in WSL2.")
     ap = argparse.ArgumentParser(description="Kernel tuning wizard for bpm. Without options it asks for everything.")
     ap.add_argument("--gpu", type=int, help="GPU index (nvidia-smi)")
     ap.add_argument("--mode", choices=list(MODES) + ["custom"], help="search size")

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: ISC
 // Per-round preparation kernels. Fixed square profile M = N = 32768, rank 128; the
 // constant signal is 64 everywhere except the 64-byte nonce in row M-1 of A.
+// Exported launch functions (Windows DLLs export only marked symbols).
+#ifdef _WIN32
+#define PM_API extern "C" __declspec(dllexport)
+#else
+#define PM_API extern "C"
+#endif
 #include <cstdint>
 #include <cuda_runtime.h>
 #include "blake3/blake3.cuh"
@@ -143,7 +149,7 @@ __global__ __launch_bounds__(256) void materialize_packed(const int8_t *signal, 
 
 using namespace support;
 
-extern "C" int pm_merkle_init(const void *key, void *tree, int k, void *stream) {
+PM_API int pm_merkle_init(const void *key, void *tree, int k, void *stream) {
   if (k < 2048 || k > 65536 || (k & (k - 1))) return cudaErrorInvalidValue;
   int nleaves = 32 * k;
   auto s = (cudaStream_t)stream;
@@ -151,27 +157,27 @@ extern "C" int pm_merkle_init(const void *key, void *tree, int k, void *stream) 
   for (int count = nleaves / 2; count >= 2; count >>= 1) parents<<<(count + 127) / 128, 128, 0, s>>>((const uint32_t *)key, (uint32_t *)tree, count, count);
   return cudaGetLastError();
 }
-extern "C" int pm_merkle_root(const void *a, const void *key, const void *tree, void *root, int k, void *stream) {
+PM_API int pm_merkle_root(const void *a, const void *key, const void *tree, void *root, int k, void *stream) {
   if (k < 2048 || k > 65536 || (k & (k - 1))) return cudaErrorInvalidValue;
   int nleaves = 32 * k, nonce_leaf = (M - 1) * k / 1024;
   update<<<1, 32, 0, (cudaStream_t)stream>>>((const uint32_t *)a, (const uint32_t *)key, (const uint32_t *)tree, (uint32_t *)root, nleaves, nonce_leaf);
   return cudaGetLastError();
 }
-extern "C" int pm_advance_nonce(void *a, void *counter, int k, void *stream) {
+PM_API int pm_advance_nonce(void *a, void *counter, int k, void *stream) {
   if (k < 2048 || k > 65536 || k % 128) return cudaErrorInvalidValue;
   advance_nonce<<<1, 64, 0, (cudaStream_t)stream>>>((int8_t *)a, (unsigned long long *)counter, k);
   return cudaGetLastError();
 }
-extern "C" int pm_build_indices(const void *in, void *indices, void *packed, int k, void *stream) {
+PM_API int pm_build_indices(const void *in, void *indices, void *packed, int k, void *stream) {
   if (k < 2048 || k > 65536 || k % 128) return cudaErrorInvalidValue;
   build_indices<<<(k + 127) / 128, 128, 0, (cudaStream_t)stream>>>((const int8_t *)in, (int32_t *)indices, (uint32_t *)packed, k);
   return cudaGetLastError();
 }
-extern "C" int pm_pack_basis(const void *in, void *out, void *stream) {
+PM_API int pm_pack_basis(const void *in, void *out, void *stream) {
   pack_basis_frag<<<M * 128 / 256, 256, 0, (cudaStream_t)stream>>>((const int8_t *)in, (uint8_t *)out);
   return cudaGetLastError();
 }
-extern "C" int pm_prepare_packed(const void *signal, const void *dense, const void *permutation, void *pairs, void *output, int k, int is_b, void *stream) {
+PM_API int pm_prepare_packed(const void *signal, const void *dense, const void *permutation, void *pairs, void *output, int k, int is_b, void *stream) {
   if (k != 4096) return cudaErrorInvalidValue;
   auto s = (cudaStream_t)stream;
   pack_pairs<<<k / 4, 128, 0, s>>>((const int8_t *)permutation, (uint16_t *)pairs, k);
@@ -184,7 +190,7 @@ extern "C" int pm_prepare_packed(const void *signal, const void *dense, const vo
   return cudaGetLastError();
 }
 // Commitment hashes key_A/key_B from both Merkle roots; certificate 3 salts with (m, n).
-extern "C" int pm_commit(const void *ra, const void *rb, const void *key, void *ka, void *kb, int cert, int m, int n, void *stream) {
+PM_API int pm_commit(const void *ra, const void *rb, const void *key, void *ka, void *kb, int cert, int m, int n, void *stream) {
   using Kernel = pearl::CommitmentHashFromMerkleRootsKernel;
   Kernel::Arguments args{(const uint8_t *)ra, (const uint8_t *)rb, (const uint8_t *)key, (uint8_t *)ka, (uint8_t *)kb, nullptr, nullptr, cert == 3, (uint32_t)m, (uint32_t)n};
   auto params = Kernel::to_underlying_arguments(args);
@@ -192,7 +198,7 @@ extern "C" int pm_commit(const void *ra, const void *rb, const void *key, void *
   return cudaGetLastError();
 }
 // Noise factors, R = 128: which&1 -> EAL (m x R), EAR (k x R) from key_A; which&2 -> EBL (k x R), EBR (n x R) from key_B.
-extern "C" int pm_noise(void *al, void *ar, void *bl, void *br, const void *ka, const void *kb, int m, int n, int k, int which, void *stream) {
+PM_API int pm_noise(void *al, void *ar, void *bl, void *br, const void *ka, const void *kb, int m, int n, int k, int which, void *stream) {
   using Kernel = pearl::NoiseGenerationKernel<128, 64>;
   Kernel::Arguments args{(which & 1) ? (int8_t *)al : nullptr, nullptr, (which & 1) ? (int8_t *)ar : nullptr, nullptr, (which & 2) ? (int8_t *)bl : nullptr, nullptr,
                          (which & 2) ? (int8_t *)br : nullptr, nullptr, (which & 1) ? m : 0, (which & 1) ? k : 0, (which & 2) ? k : 0, (which & 2) ? n : 0,

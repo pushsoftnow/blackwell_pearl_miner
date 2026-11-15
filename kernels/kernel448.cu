@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: ISC
 // Mining kernel on dense prepared operands, K = 4096.
 // CTA tile 192x256 (8 warps, warp tile 96x64), TMA operand tiles, two pipeline stages.
+// Exported launch functions (Windows DLLs export only marked symbols).
+#ifdef _WIN32
+#define PM_API extern "C" __declspec(dllexport)
+#else
+#define PM_API extern "C"
+#endif
 #include <cuda_runtime.h>
 #include <cuda.h>
 #include <cstdint>
@@ -157,7 +163,7 @@ int encode_maps(const void *a, const void *b) {
 } // namespace k448
 
 // Operands prepared by pm_prepare_packed (A: is_b=0, B: is_b=1), M = N = 32768, K = 4096.
-extern "C" int pm_k448_launch(const void *a, const void *b, const void *key, const void *target, void *count, void *ids, int capacity, void *stream) {
+PM_API int pm_k448_launch(const void *a, const void *b, const void *key, const void *target, void *count, void *ids, int capacity, void *stream) {
   using namespace k448;
   int rc = encode_maps(a, b);
   if (rc) return rc;
