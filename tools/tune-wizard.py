@@ -357,6 +357,7 @@ def main():
     ap.add_argument("--seed", type=int, default=None, help="random seed of the search")
     ap.add_argument("--yes", action="store_true", help="accept the default answer of every question")
     ap.add_argument("--no-apply", action="store_true", help="do not add the result to kernels/variants.txt")
+    ap.add_argument("--best-log", help="append progress and every new best candidate to this file (for tail -f)")
     args = ap.parse_args()
     AUTO_YES = args.yes
 
@@ -534,10 +535,14 @@ def search(args, gpu, gi, cuda_ver, nvcc, cuobjdump, bpm, n_cand, seconds, metho
             chunk = todo[i:i + batch_size]
             for (k, lib, h), r in zip(chunk, meas.measure([c[1] for c in chunk])):
                 by_hash[h] = r
+            # Copy into results before the progress callback, so best() sees this chunk.
+            for r in results.values():
+                if r.get("hash") in by_hash and "valid" not in r:
+                    r["valid"], r["relative"], r["error"] = by_hash[r["hash"]]
             measured += len(chunk)
             if progress:
                 progress(len(chunk))
-        for k, r in results.items():
+        for r in results.values():
             if r.get("hash") in by_hash and "valid" not in r:
                 r["valid"], r["relative"], r["error"] = by_hash[r["hash"]]
         return measured
@@ -549,6 +554,41 @@ def search(args, gpu, gi, cuda_ver, nvcc, cuobjdump, bpm, n_cand, seconds, metho
 
     def gain(r):
         return (1.0 / r["relative"] - 1.0) * 100.0 if r["relative"] > 0 else float("nan")
+
+    log_state = {"best": None, "measured": 0, "path": args.best_log}
+
+    def blog(msg):
+        """Appends to the optional --best-log file; a failing write only disables the log, never the run."""
+        path = log_state["path"]
+        if not path:
+            return
+        try:
+            created = not os.path.exists(path)
+            with open(path, "a") as f:
+                f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}  {msg}\n")
+            if created:
+                chown_to_user(path)
+        except OSError as e:
+            log_state["path"] = None
+            say(f"\nWarning: cannot write the progress log {path} ({e}); logging stopped.")
+
+    def log_progress(stage, done, total):
+        b = best()
+        if not b:
+            return
+        r = b[0]
+        k = key_of(r["knobs"], r["ptxas"])
+        if k != log_state["best"]:
+            log_state["best"] = k
+            blog(f"NEW BEST  {gain(r):+.3f} %  {describe(r['knobs'], r['ptxas'])}"
+                 f"{'  (' + r['name'] + ')' if r.get('name') else ''}  [{stage} {done}/{total}, {len(by_hash)} measured]")
+        elif len(by_hash) - log_state["measured"] >= 40:
+            blog(f"status    {stage} {done}/{total}, {len(by_hash)} measured, best {gain(r):+.3f} %  {describe(r['knobs'], r['ptxas'])}")
+        else:
+            return
+        log_state["measured"] = len(by_hash)
+
+    blog(f"start     {gpu['name']}, CUDA {cuda_ver}, {power:g} W, method {method}, {n_cand} candidates, seed {args.seed}")
 
     # 1. Baselines: the variant list and every ptxas level of the default placement.
     say(f"\nWork directory: {work}")
@@ -562,6 +602,7 @@ def search(args, gpu, gi, cuda_ver, nvcc, cuobjdump, bpm, n_cand, seconds, metho
         cnt[0] += n
         b = best()
         p.update(cnt[0], f"| best {gain(b[0]):+.2f} %" if b else "")
+        log_progress(p.label, cnt[0], p.total)
 
     measured = evaluate(seeds, tick)
     p.update(p.total)
@@ -604,6 +645,7 @@ def search(args, gpu, gi, cuda_ver, nvcc, cuobjdump, bpm, n_cand, seconds, metho
         if len(top) == 5:
             break
     say("\nStep 3/3: confirmation of the 5 best (timing, 60 s)")
+    blog(f"search done, {len(by_hash)} measured; confirming the 5 best with 60 s timing")
     conf = meas.timing([t["lib"] for t in top], seconds=60)
     for t, (valid, rel, err) in zip(top, conf):
         t["valid"], t["relative"], t["error"] = valid, rel, err
@@ -611,6 +653,7 @@ def search(args, gpu, gi, cuda_ver, nvcc, cuobjdump, bpm, n_cand, seconds, metho
     top.sort(key=lambda r: r["relative"])
     for t in top:
         say(f"  {describe(t['knobs'], t['ptxas']):<44} {gain(t):+7.3f} ± {t['error'] * 100:.3f} %")
+        blog(f"confirm   {gain(t):+.3f} ± {t['error'] * 100:.3f} %  {describe(t['knobs'], t['ptxas'])}")
     winner = top[0] if top else None
     # Same rule as the miner (src/tune.rs): beyond twice the measuring error and at least 0.05 %.
     significant = bool(winner) and (1.0 - winner["relative"]) > max(2.0 * winner["error"], 0.0005)
@@ -651,6 +694,8 @@ def search(args, gpu, gi, cuda_ver, nvcc, cuobjdump, bpm, n_cand, seconds, metho
     out.write_text(json.dumps(report, indent=2) + "\n")
     chown_to_user(out)
     say(f"\nReport written to {out}")
+    blog(f"FINISHED  winner {report['best']['variant'] + ' ' + format(report['best']['gain_percent'], '+.3f') + ' %' if report['best'] else 'none'}"
+         f"{' (significant)' if significant else ' (not significant)'}; report {out}")
 
     if winner and significant and not existing and not args.no_apply:
         name = f"{gpu_slug}-{date}"[:32]
