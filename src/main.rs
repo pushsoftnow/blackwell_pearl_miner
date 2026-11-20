@@ -2,6 +2,7 @@
 mod console;
 mod cuda;
 mod engine;
+mod fp8test;
 mod kernels;
 mod miner;
 mod nvml;
@@ -96,6 +97,13 @@ struct Cli {
     /// Offline self-test: mine a fixed job and verify proofs with the official verifier
     #[arg(long)]
     self_test: bool,
+    /// Compare today's PearlHash (INT7, kernel 780) with the coming FP8 hard fork (PIP-3, kernel f780) and print
+    /// preliminary hashrates (absolute and relative); offline, no pool
+    #[arg(long)]
+    test_fp8: bool,
+    /// Total run time of --test-fp8 (both algorithms, all rounds)
+    #[arg(long, default_value_t = 300.0, value_name = "SECONDS")]
+    test_fp8_seconds: f64,
     /// Time all kernel variants on this GPU, mine with the fastest and store the result
     #[arg(long, alias = "retune")]
     tune: bool,
@@ -200,6 +208,9 @@ fn tune_only(device: i32, k: usize, opts: &tune::Options) -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.test_fp8 {
+        return fp8test::run(cli.device, cli.test_fp8_seconds);
+    }
     if cli.self_test {
         return self_test(cli.device);
     }

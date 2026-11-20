@@ -48,6 +48,8 @@ pub struct Kernels {
     pub prepare_packed: unsafe extern "C" fn(C, C, C, P, P, c_int, c_int, P) -> c_int,
     pub commit: unsafe extern "C" fn(C, C, C, P, P, c_int, c_int, c_int, P) -> c_int,
     pub noise: unsafe extern "C" fn(P, P, P, P, C, C, c_int, c_int, c_int, c_int, P) -> c_int,
+    /// FP8 kernel f780 (--test-fp8) (pa, pb, m, n, k, key, bound, count, hits, cap, digests, grid, stream, cyc)
+    pub f780: unsafe extern "C" fn(C, C, c_int, c_int, c_int, C, C, P, P, c_int, P, c_int, P, P) -> c_int,
 }
 unsafe impl Send for Kernels {}
 unsafe impl Sync for Kernels {}
@@ -71,6 +73,7 @@ impl Kernels {
             prepare_packed: sym(h, "pm_prepare_packed")?,
             commit: sym(h, "pm_commit")?,
             noise: sym(h, "pm_noise")?,
+            f780: sym(h, "pm_f780_launch")?,
         };
         lib.leak();
         Ok(k)
