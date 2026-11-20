@@ -152,6 +152,86 @@ fn trace(ev: &str) {
     }
 }
 
+/// Live progress line while the test runs (terminal only): spinner, bar, phase and remaining time,
+/// redrawn in place every 125 ms; `clear` removes it before a normal line is printed.
+struct Ticker {
+    st: Arc<Mutex<TickState>>,
+    stop: Arc<AtomicBool>,
+    h: Option<std::thread::JoinHandle<()>>,
+}
+
+struct TickState {
+    on: bool,
+    head: String,
+    label: String,
+    t0: Instant,
+    dur: f64,
+}
+
+const TICK_W: usize = 90;
+
+impl Ticker {
+    fn new() -> Self {
+        use std::io::{IsTerminal, Write};
+        let now = Instant::now();
+        let st = Arc::new(Mutex::new(TickState { on: false, head: String::new(), label: String::new(), t0: now, dur: 1.0 }));
+        let stop = Arc::new(AtomicBool::new(false));
+        let h = std::io::stdout().is_terminal().then(|| {
+            let (st, stop) = (st.clone(), stop.clone());
+            std::thread::spawn(move || {
+                const SPIN: [char; 4] = ['|', '/', '-', '\\'];
+                let mut i = 0usize;
+                while !stop.load(Ordering::SeqCst) {
+                    {
+                        let g = st.lock().unwrap();
+                        if g.on {
+                            let f = (g.t0.elapsed().as_secs_f64() / g.dur).clamp(0.0, 1.0);
+                            let n = (f * 20.0).round() as usize;
+                            let line = format!("         {:<11} {} [{}{}] {:>3} %  {}",
+                                g.head, SPIN[i % 4], "#".repeat(n), "-".repeat(20 - n), (f * 100.0) as u32, g.label);
+                            let mut o = std::io::stdout().lock();
+                            let _ = write!(o, "\r{line:<TICK_W$}");
+                            let _ = o.flush();
+                        }
+                    }
+                    i += 1;
+                    std::thread::sleep(Duration::from_millis(125));
+                }
+            })
+        });
+        Ticker { st, stop, h }
+    }
+    /// Start a progress phase: `head` (e.g. "round 1/6"), bar over `dur` seconds.
+    fn phase(&self, head: &str, dur: f64) {
+        let mut g = self.st.lock().unwrap();
+        (g.on, g.head, g.t0, g.dur) = (true, head.to_string(), Instant::now(), dur);
+    }
+    fn label(&self, label: &str) {
+        self.st.lock().unwrap().label = label.to_string();
+    }
+    /// Remove the progress line (the next println starts at column 0).
+    fn clear(&self) {
+        use std::io::Write;
+        let mut g = self.st.lock().unwrap();
+        if g.on && self.h.is_some() {
+            let mut o = std::io::stdout().lock();
+            let _ = write!(o, "\r{:TICK_W$}\r", "");
+            let _ = o.flush();
+        }
+        g.on = false;
+    }
+}
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.clear();
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(h) = self.h.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 fn mean(v: &[f64]) -> f64 {
     if v.is_empty() { f64::NAN } else { v.iter().sum::<f64>() / v.len() as f64 }
 }
@@ -256,11 +336,10 @@ pub fn run(device: i32, seconds: f64) -> Result<()> {
     // `seconds` = total time of all blocks (settle included); even block count so both orders occur equally.
     let blocks = ((seconds / (2.0 * (SETTLE + 15.0))).floor() as usize).max(2) / 2 * 2;
     let half = (seconds / (2.0 * blocks as f64) - SETTLE).max(15.0);
-    let total = 2.0 * blocks as f64 * (SETTLE + half) + 10.0;
-    println!(" [3/3] Measuring         {blocks} rounds, TODAY and AFTER FORK alternate, about {:.0} min {:02.0} s",
-        (total / 60.0).floor(), total % 60.0);
+    println!(" [3/3] Measuring         {blocks} rounds, TODAY and AFTER FORK alternate");
     println!("                         keep other GPU load off during the test (Ctrl+C aborts)");
     trace(&format!("f780 batch {batch} x {one_ms:.2} ms, settle {SETTLE} s, measure {half:.1} s"));
+    let ticker = Ticker::new();
     let run_block = |which: usize, settle: f64, secs: f64, eng: &Engine| -> Result<(f64, f64)> {
         let one = || -> Result<(f64, f64)> {
             let w0 = Instant::now();
@@ -274,6 +353,8 @@ pub fn run(device: i32, seconds: f64) -> Result<()> {
             trace(&format!("launch k={which} kernel_ms={:.1} wall_ms={:.1}", r.1, r.2));
             Ok((r.0, r.2))
         };
+        let name = if which == 1 { "TODAY (INT7)" } else { "AFTER FORK (FP8)" };
+        ticker.label(&format!("{} {name}", if secs > 0.0 { "running" } else { "warming up" }));
         let t0 = Instant::now();
         while t0.elapsed().as_secs_f64() < settle {
             one()?;
@@ -290,18 +371,22 @@ pub fn run(device: i32, seconds: f64) -> Result<()> {
         phase.store(0, Ordering::SeqCst);
         Ok((macs, ms))
     };
+    ticker.phase("warm-up", 10.0);
     run_block(1, 10.0, 0.0, &eng)?; // warm-up
     let mut rate = [Vec::new(), Vec::new(), Vec::new()];
     for b in 0..blocks {
         // A B B A: kernel 780 first in even blocks, f780 first in odd blocks.
         let order = if b % 2 == 0 { [1, 2] } else { [2, 1] };
+        ticker.phase(&format!("round {}/{}", b + 1, blocks), 2.0 * (SETTLE + half));
         for &w in &order {
             let (macs, ms) = run_block(w, SETTLE, half, &eng)?;
             rate[w].push(macs / (ms / 1000.0) / 1e12);
         }
+        ticker.clear();
         println!("         round {:>2}/{:<2}      TODAY {:>6.1} TH/s   AFTER FORK {:>6.1} TH/s   ({:+.1} %)",
             b + 1, blocks, rate[1][b], rate[2][b], 100.0 * (rate[2][b] / rate[1][b] - 1.0));
     }
+    drop(ticker);
     stop.store(true, Ordering::SeqCst);
     if let Some(h) = sampler {
         let _ = h.join();
