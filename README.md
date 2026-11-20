@@ -27,6 +27,55 @@ No Kryptex account yet? Sign up here: **[kryptex.com](https://www.kryptex.com/?r
 > blackwell_pearl_miner is completely free and open source — there is **no dev fee**; 100 % of
 > your hashrate goes to the pool and wallet you configure.
 
+## Quickstart: FP8 hard fork impact test
+
+Pearl plans a hard fork (PIP-3, certificate v4) that switches mining from INT7 to FP8
+arithmetic. `--test-fp8` shows what that means for your GPU: it checks the FP8 kernel bit for bit
+against a reference job, then runs today's algorithm and the FP8 algorithm in alternating rounds
+and prints a side-by-side comparison (hashrate, efficiency, power, clock, temperature). It runs
+offline, needs no pool or wallet and takes about 5 minutes. Stop the miner and other GPU
+programs first.
+
+Linux:
+
+```bash
+git clone --recursive https://github.com/pushsoftnow/blackwell_pearl_miner.git
+cd blackwell_pearl_miner
+cargo build --release
+./target/release/bpm --test-fp8
+```
+
+Windows (PowerShell, after installing the tools listed under [Windows](#windows)):
+
+```powershell
+git clone --recursive https://github.com/pushsoftnow/blackwell_pearl_miner.git
+cd blackwell_pearl_miner
+cargo build --release
+.\target\release\bpm.exe --test-fp8
+```
+
+If you already have a checkout, update it with `git pull` and `git submodule update --init --recursive`
+and rebuild. `--test-fp8-seconds N` changes the total test time (default 300). The result
+depends on the power limit, so run it at the limit you mine with.
+
+Example (RTX PRO 4500 Blackwell, 150 W):
+
+```
+ RESULT  NVIDIA RTX PRO 4500 Blackwell  @ 150 W power limit
+------------------------------------------------------------------------------------------
+                         TODAY (INT7, v3)    AFTER FORK (FP8, v4)          CHANGE
+ Hashrate                      176.5 TH/s              146.1 TH/s         -17.2 %
+ Efficiency                    1.177 TH/J              0.974 TH/J         -17.2 %
+ Power draw                       150.0 W                 150.0 W
+ SM clock                        2196 MHz                1803 MHz         -17.9 %
+ GPU temperature                    75 °C                   74 °C
+```
+
+The results are **preliminary**: PIP-3 is not final and has no mainnet fork height yet, and
+the FP8 kernel is experimental (verified against the reference, but not yet mined end to end;
+no pool accepts FP8 shares yet). Please share your results (GPU, power limit, output) in a
+GitHub issue.
+
 ## Requirements
 
 * Linux x86_64, or Windows 10/11 x86_64 ([Windows](#windows), new and not yet tested on real hardware)

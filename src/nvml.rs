@@ -47,6 +47,8 @@ pub struct Nvml {
     utilization: unsafe extern "C" fn(Dev, *mut UtilSample, *mut c_uint, u64) -> c_int,
     shutdown: unsafe extern "C" fn() -> c_int,
     last_timestamp: u64,
+    power_usage: Option<unsafe extern "C" fn(Dev, *mut c_uint) -> c_int>,
+    clock_info: Option<unsafe extern "C" fn(Dev, c_uint, *mut c_uint) -> c_int>,
 }
 unsafe impl Send for Nvml {}
 
@@ -78,6 +80,8 @@ impl Nvml {
                 utilization: std::mem::transmute(sym("nvmlDeviceGetProcessUtilization")?),
                 shutdown: std::mem::transmute(sym("nvmlShutdown")?),
                 last_timestamp: 0,
+                power_usage: sym("nvmlDeviceGetPowerUsage").ok().map(|p| std::mem::transmute(p)),
+                clock_info: sym("nvmlDeviceGetClockInfo").ok().map(|p| std::mem::transmute(p)),
                 _lib: lib,
             };
             n.active()?; // consume samples older than the start
@@ -94,6 +98,18 @@ impl Nvml {
         let mut v = 0;
         check(unsafe { (self.power_limit)(self.dev, &mut v) }, "power limit")?;
         Ok(v as f64 / 1000.0)
+    }
+    /// Current board power draw in W (--test-fp8).
+    pub fn power_w(&self) -> Option<f64> {
+        let f = self.power_usage?;
+        let mut v = 0;
+        (unsafe { f(self.dev, &mut v) } == 0).then_some(v as f64 / 1000.0)
+    }
+    /// Current SM clock in MHz (--test-fp8).
+    pub fn sm_clock_mhz(&self) -> Option<f64> {
+        let f = self.clock_info?;
+        let mut v = 0;
+        (unsafe { f(self.dev, 1, &mut v) } == 0).then_some(v as f64)
     }
     /// PIDs with a context on the GPU (compute and graphics).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

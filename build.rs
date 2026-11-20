@@ -96,6 +96,7 @@ fn main() {
     let mut units: Vec<(String, &str, Vec<String>)> = vec![
         ("kernel448".into(), "kernel448", vec!["--ptxas-options=-O3".into()]),
         ("support".into(), "support", vec![]),
+        ("f780".into(), "f780", vec!["--ptxas-options=-O3".into()]),  // FP8 (PIP-3) kernel for --test-fp8
     ];
     for (i, v) in variants.iter().enumerate() {
         let mut args: Vec<String> = v.ptxas.iter().flat_map(|o| ["-Xptxas".to_string(), o.clone()]).collect();
