@@ -346,5 +346,15 @@ pub fn run(device: i32, seconds: f64) -> Result<()> {
     println!("  * Results depend on power limit, cooling, memory clock, driver and other GPU load.");
     println!("    No guarantee of future hashrate or earnings.");
     println!("{RULE}");
+    // The test is part of the normal miner binary: show how to mine with exactly this binary right away.
+    let exe = std::env::args().next().unwrap_or_else(|| "bpm".into());
+    let dev = if device != 0 { format!(" --device {device}") } else { String::new() };
+    println!(" START MINING (today's algorithm) with this same binary, no rebuild needed:");
+    println!();
+    println!("   {exe} --pool prl-eu.kryptex.network:7048 --wallet YOUR_KRYPTEX_ID --worker rig1{dev}");
+    println!();
+    println!(" Replace YOUR_KRYPTEX_ID (starts with krx) and rig1. Add --background if the GPU is shared,");
+    println!(" --tune once to pick the fastest kernel variant. Any PearlHash pool works: see README.");
+    println!("{RULE}");
     Ok(())
 }

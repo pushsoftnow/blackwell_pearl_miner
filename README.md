@@ -36,6 +36,9 @@ and prints a side-by-side comparison (hashrate, efficiency, power, clock, temper
 offline, needs no pool or wallet and takes about 5 minutes. Stop the miner and other GPU
 programs first.
 
+The test is built into the normal miner binary: there is no separate build or download. When
+it finishes, it prints the command to start mining with the same binary right away.
+
 Linux:
 
 ```bash
@@ -43,6 +46,8 @@ git clone --recursive https://github.com/pushsoftnow/blackwell_pearl_miner.git
 cd blackwell_pearl_miner
 cargo build --release
 ./target/release/bpm --test-fp8
+# then mine with the same binary:
+./target/release/bpm --pool prl-eu.kryptex.network:7048 --wallet YOUR_KRYPTEX_ID --worker rig1
 ```
 
 Windows (PowerShell, after installing the tools listed under [Windows](#windows)):
@@ -52,6 +57,8 @@ git clone --recursive https://github.com/pushsoftnow/blackwell_pearl_miner.git
 cd blackwell_pearl_miner
 cargo build --release
 .\target\release\bpm.exe --test-fp8
+# then mine with the same binary:
+.\target\release\bpm.exe --pool prl-eu.kryptex.network:7048 --wallet YOUR_KRYPTEX_ID --worker rig1
 ```
 
 If you already have a checkout, update it with `git pull` and `git submodule update --init --recursive`
