@@ -28,9 +28,10 @@ use zk_pow::api::proof::IncompleteBlockHeader;
 #[derive(Parser)]
 #[command(name = "bpm", version, about = "PearlHash pool miner for NVIDIA Blackwell GPUs (compute capability 12.0)")]
 struct Cli {
-    /// Pearl Stratum endpoint HOST:PORT
-    #[arg(long)]
-    pool: Option<String>,
+    /// Pearl Stratum endpoint: HOST:PORT, stratum+tcp://HOST:PORT or stratum+ssl://HOST:PORT (TLS).
+    /// Repeat (or separate with commas) for failover pools; the first is the primary
+    #[arg(long, value_delimiter = ',')]
+    pool: Vec<String>,
     /// Payout address or pool account
     #[arg(long)]
     wallet: Option<String>,
@@ -94,6 +95,12 @@ struct Cli {
     /// Seconds between pool reconnect attempts
     #[arg(long, default_value_t = 5)]
     reconnect_seconds: u64,
+    /// Reconnect when the pool sends nothing for this many seconds (dead connection)
+    #[arg(long, default_value_t = 300)]
+    pool_timeout: u64,
+    /// On a failover pool, return to the primary after this many minutes (0 = stay)
+    #[arg(long, default_value_t = 10)]
+    failback_minutes: u64,
     /// Offline self-test: mine a fixed job and verify proofs with the official verifier
     #[arg(long)]
     self_test: bool,
@@ -243,13 +250,17 @@ fn main() -> Result<()> {
         ensure!(kernel == Kernel::K780, "kernel tuning applies to kernel 780");
         return tune_only(cli.device, k, &tune_opts);
     }
-    let Some(pool) = cli.pool else { bail!("--pool HOST:PORT is required (or use --self-test)") };
+    ensure!(!cli.pool.is_empty(), "--pool HOST:PORT is required (or use --self-test)");
+    let pools = cli.pool.iter().map(|p| pool::Endpoint::parse(p.trim())).collect::<Result<Vec<_>>>()?;
+    ensure!(cli.pool_timeout >= 30, "--pool-timeout must be at least 30 seconds");
     let Some(wallet) = cli.wallet else { bail!("--wallet is required") };
     ensure!((1.0..=1000.0).contains(&cli.priority_slowdown), "--priority-slowdown must be 1..1000 percent");
     ensure!(cli.hit_capacity >= 1 && (1..=1024).contains(&cli.queue_size) && (1..=16).contains(&cli.max_inflight), "invalid --hit-capacity, --queue-size or --max-inflight");
     let log_path = cli.log.unwrap_or_else(|| PathBuf::from(format!("logs/bpm-{}.jsonl", stamp())));
     let code = miner::run(miner::MineArgs {
-        pool,
+        pools,
+        pool_timeout: cli.pool_timeout,
+        failback_minutes: cli.failback_minutes,
         wallet,
         worker: cli.worker,
         seconds: cli.seconds,

@@ -17,7 +17,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct MineArgs {
-    pub pool: String,
+    /// Primary pool first, then failover pools.
+    pub pools: Vec<crate::pool::Endpoint>,
+    pub pool_timeout: u64,
+    pub failback_minutes: u64,
     pub wallet: String,
     pub worker: String,
     pub seconds: f64,
@@ -97,7 +100,7 @@ pub fn run(a: MineArgs) -> Result<i32> {
 
 fn mine(a: &MineArgs, state: &Arc<State>, log: &Log) -> Result<i32> {
     let mut profile = a.profile;
-    log.event("startup", json!({"endpoint":a.pool,"wallet":a.wallet,"worker":a.worker,"variant":profile.variant(),
+    log.event("startup", json!({"endpoint":a.pools.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", "),"wallet":a.wallet,"worker":a.worker,"variant":profile.variant(),
         "k":profile.k,"seconds":a.seconds,"log_path":a.log_path.display().to_string()}));
     let device = Device::open(a.device)?;
     let info = device.info()?;
@@ -123,13 +126,15 @@ fn mine(a: &MineArgs, state: &Arc<State>, log: &Log) -> Result<i32> {
     let net = {
         let (state, log) = (state.clone(), log.clone());
         let cfg = NetworkConfig {
-            endpoint: a.pool.clone(),
+            endpoints: a.pools.clone(),
             wallet: a.wallet.clone(),
             worker: a.worker.clone(),
             stop_after: a.stop_after,
             max_inflight: a.max_inflight,
             ack_timeout: Duration::from_secs(15),
             retry: Duration::from_secs(a.reconnect_seconds),
+            silence_timeout: Duration::from_secs(a.pool_timeout),
+            failback: Duration::from_secs(a.failback_minutes * 60),
         };
         std::thread::Builder::new().name("pearl-network".into()).spawn(move || network_worker(state, submit_rx, cfg, log))?
     };

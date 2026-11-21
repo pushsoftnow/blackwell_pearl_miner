@@ -11,10 +11,10 @@ Every share is checked with the official Pearl verifier (`zk-pow`) before it is 
 git clone --recursive https://github.com/pushsoftnow/blackwell_pearl_miner.git
 cd blackwell_pearl_miner
 cargo build --release
-./target/release/bpm --pool prl-eu.kryptex.network:7048 --wallet YOUR_KRYPTEX_ID --worker rig1
+./target/release/bpm --pool stratum+ssl://prl-eu.kryptex.network:8048 --wallet YOUR_KRYPTEX_ID --worker rig1
 ```
 
-Replace `YOUR_KRYPTEX_ID` with your Kryptex account ID (it starts with `krx`) and `rig1` with
+This connects with TLS (port 8048); plain TCP is `prl-eu.kryptex.network:7048`. Replace `YOUR_KRYPTEX_ID` with your Kryptex account ID (it starts with `krx`) and `rig1` with
 any worker name. Add `--background` if the GPU is shared with other programs (games, LLM
 servers): mining then pauses whenever another process computes on the GPU. Add `--tune` once to time
 the kernel variants on your GPU (about 40 seconds, [Kernel tuning](#kernel-tuning)).
@@ -154,7 +154,7 @@ and checks that every kernel 780 variant reports exactly the default variant's h
 
 | Option | Meaning |
 |---|---|
-| `--pool HOST:PORT` | Pearl Stratum endpoint |
+| `--pool URL` | Pearl Stratum endpoint: `HOST:PORT`, `stratum+tcp://HOST:PORT` or `stratum+ssl://HOST:PORT` (TLS). Repeat for failover pools |
 | `--wallet`, `--worker` | Credentials sent to the pool |
 | `--seconds N` | Stop after N seconds (default: unlimited) |
 | `--device N` | CUDA device ordinal (default 0) |
@@ -171,6 +171,54 @@ and checks that every kernel 780 variant reports exactly the default variant's h
 
 `--help` lists all options. Stop the miner with Ctrl+C; it finishes the rounds in flight and
 waits for outstanding pool acknowledgements. A second Ctrl+C exits immediately.
+
+### Pool connection and unattended operation
+
+* **TLS:** `stratum+ssl://` encrypts the connection and checks the pool's certificate against the
+  Mozilla root store (built in, no OpenSSL needed). Without TLS, anyone on the network path could
+  read or change the traffic, for example swap the wallet in the login.
+* **Failover:** give `--pool` several times (or comma-separated). The first pool is the primary. If a
+  connection fails, the miner moves on to the next pool and returns to the primary after
+  `--failback-minutes` (default 10, `0` = stay). Wallet and worker are the same for all pools, and
+  every pool must support gzip proofs if the first one does (Kryptex does).
+* **Dead connections:** TCP keepalive detects a silently dropped connection within about a minute (Windows: about two).
+  In addition the miner reconnects when the pool sends nothing for `--pool-timeout` seconds
+  (default 300; Pearl pools send a new job about every 50 s). Every resolved address of a pool
+  (IPv4 and IPv6) is tried in turn. `client.reconnect` from the pool is honoured for the same pool;
+  redirects to other hosts are ignored.
+* **Restart after errors:** the miner exits on fatal errors (driver or CUDA error, a share that fails
+  the built-in verifier, too high temperature). For 24/7 operation run it under a supervisor.
+
+  Linux (systemd), `/etc/systemd/system/bpm.service`:
+
+  ```ini
+  [Unit]
+  Description=bpm PearlHash miner
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  User=YOUR_USER
+  WorkingDirectory=/home/YOUR_USER/blackwell_pearl_miner
+  ExecStart=/home/YOUR_USER/blackwell_pearl_miner/target/release/bpm --pool stratum+ssl://prl-eu.kryptex.network:8048 --pool prl-eu.kryptex.network:7048 --wallet YOUR_KRYPTEX_ID --worker rig1
+  Restart=always
+  RestartSec=30
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+  Then `sudo systemctl daemon-reload && sudo systemctl enable --now bpm` and `journalctl -u bpm -f`.
+
+  Windows, `mine.cmd` next to the binary:
+
+  ```bat
+  @echo off
+  :loop
+  bpm.exe --pool stratum+ssl://prl-eu.kryptex.network:8048 --pool prl-eu.kryptex.network:7048 --wallet YOUR_KRYPTEX_ID --worker rig1
+  timeout /t 30
+  goto loop
+  ```
 
 ### Kernel profiles
 

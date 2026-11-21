@@ -86,6 +86,8 @@ Certain files within this repository are subject to separate licensing terms:
 
 Fetched by cargo (see Cargo.lock) under their own licenses: MIT, Apache-2.0, BSD-2/3-Clause,
 ISC, Zlib, CC0-1.0, Unlicense, Unicode-3.0 (in dual- or multi-licensed form). None is copyleft-only.
+TLS uses `rustls` with `ring` (Apache-2.0 AND ISC, plus parts derived from OpenSSL/BoringSSL under
+their permissive licenses) and the Mozilla root certificates from `webpki-roots` (CDLA-Permissive-2.0).
 
 ## NVIDIA CUDA
 

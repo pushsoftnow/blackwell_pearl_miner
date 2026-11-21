@@ -48,7 +48,9 @@ pub fn format_event(row: &Value) -> String {
             s(row, "endpoint"), s(row, "wallet"), s(row, "worker"), clean(row["log_path"].as_str().unwrap_or(""), 1024)
         ),
         "authorized" => format!(
-            "{p}Pool connected | worker {} | {}",
+            "{p}Pool connected{} | {} | worker {} | {}",
+            if row["failover"] == true { " (failover)" } else { "" },
+            s(row, "endpoint"),
             s(row, "worker"),
             if row["proof_compression"] == "gzip" { "gzip proofs" } else { "uncompressed proofs" }
         ),
@@ -89,7 +91,14 @@ pub fn format_event(row: &Value) -> String {
             format!("{p}PAUSED: GPU yielded to a priority program{who}")
         }
         "priority_resume" => format!("{p}RESUMED after {}", duration(&row["paused_seconds"])),
-        "disconnected" => format!("{p}Pool connection lost: {} | retrying in {} s", s(row, "error"), s(row, "retry_seconds")),
+        "disconnected" => {
+            let next = row["next_endpoint"].as_str().filter(|n| Some(*n) != row["endpoint"].as_str());
+            format!("{p}Pool connection lost: {} | {} | retrying in {} s{}", s(row, "endpoint"), s(row, "error"), s(row, "retry_seconds"),
+                next.map(|n| format!(" with {}", clean(n, 200))).unwrap_or_default())
+        }
+        "failback" => format!("{p}Returning to the primary pool {}", s(row, "to")),
+        "pool_reconnect" => format!("{p}Pool requested a reconnect | {} | in {} s", s(row, "endpoint"), s(row, "wait_seconds")),
+        "pool_notice" => format!("{p}Pool message {} {}", s(row, "method"), if row["handled"] == true { "(handled)" } else { "(ignored)" }),
         "profile_fallback" => format!("{p}Pool without gzip proofs: using kernel {} with K={}", s(row, "variant"), s(row, "k")),
         "tune_start" => format!("{p}Kernel tuning: timing {} kernel variants on this GPU (K={}, about {} s, once per GPU/driver/build/power limit)", s(row, "variants"), s(row, "k"), number(&row["seconds"], 0)),
         "tune_result" => {
